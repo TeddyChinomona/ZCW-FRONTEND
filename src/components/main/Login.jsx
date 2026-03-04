@@ -1,277 +1,142 @@
-import axios from 'axios';
+/**
+ * src/components/main/Login.jsx  (updated)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Changes from original:
+ *  • Replaced raw axios.post('http://127.0.0.1:8000/zrp/login/', ...)
+ *    with authService.login() — correct endpoint + token persistence handled there.
+ *  • Added loading state and user-facing error message.
+ *  • Uses react-router-dom's useNavigate instead of window.location.href.
+ */
+
 import { useState } from 'react';
-import Logo from '/logo.jpg'
+import { useNavigate } from 'react-router-dom';
+import { login } from '../../services/authService';
 
+export default function Login() {
+  const navigate = useNavigate();
 
-function Login() {
-  const [showPassword, setShowPassword] = useState(false);
-  const [loginCredentials, setloginCredentials] = useState({
+  const [loginCredentials, setLoginCredentials] = useState({
     zrp_badge_number: '',
-    password: ''
-  })
-  
-  const Login_request = () =>{
-    axios.post('http://localhost:8000/api/public/auth/login/', loginCredentials)
-    .then(response => {
-      console.log(response.data);
-    })
-    .catch(error => {
-      console.error('Login failed:', error);
-    });
-  }
+    password: '',
+  });
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleLogin = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      await login(loginCredentials.zrp_badge_number, loginCredentials.password);
+      navigate('/home');
+    } catch (err) {
+      const detail =
+        err.response?.data?.detail ||
+        err.response?.data?.non_field_errors?.[0] ||
+        'Login failed. Please check your credentials.';
+      setError(detail);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="login">
-      <div className="container d-flex justify-content-center align-items-center login-inside">
-        <div className="row">
-          {/* Left column or panel */}
-          <div className="col-3 left-panel rounded-start-2">
-            <div className='mb-4'>
-              <div className="text-center mb-4">
-                <img src={Logo} alt="ZRP Logo" className="rounded-circle login-img" />
-                <h2 className="fw-bold">Zimbabwe Republic Police</h2>
-                <p className="opacity-75">Crime Management System</p>
-              </div>
+    <div
+      className="d-flex justify-content-center align-items-center vh-100"
+      style={{ background: 'linear-gradient(135deg, #0d1b2a 0%, #1b3a6b 100%)' }}
+    >
+      <div
+        className="card shadow-lg border-0 rounded-4 p-4"
+        style={{ width: '100%', maxWidth: '420px' }}
+      >
+        {/* Logo / Header */}
+        <div className="text-center mb-4">
+          <img src="/logo.jpg" alt="ZimCrimeWatch" height={64} className="mb-3" />
+          <h4 className="fw-bold">ZIM CRIME WATCH</h4>
+          <p className="text-muted small">ZRP Officer Portal</p>
+        </div>
 
-              <div className='d-flex my-4 justify-content-center align-items-center'>
-                <h5 className="mb-3">Secure Access</h5>
-              </div>
-
-              <div className="d-flex justify-content-center align-items-center">
-                <ul className="list-unstyled">
-                  <li className="mb-2">
-                    <i className="bi bi-shield-lock-fill me-2"></i>
-                    256-bit Encryption
-                  </li>
-                  <li className="mb-2">
-                    <i className="bi bi-fingerprint me-2"></i>
-                    Multi-factor Authentication
-                  </li>
-                  <li className="mb-2">
-                    <i className="bi bi-clock-history me-2"></i>
-                    Session Monitoring
-                  </li>
-                  <li className="mb-2">
-                    <i className="bi bi-journal-check me-2"></i>
-                    Audit Trail Logging
-                  </li>
-                </ul>
-              </div>
-            </div>
+        {/* Error alert */}
+        {error && (
+          <div className="alert alert-danger py-2 small" role="alert">
+            <i className="bi bi-exclamation-triangle-fill me-2"></i>
+            {error}
           </div>
+        )}
 
-          {/* Right panel/column */}
-          <div className="col-9 right-panel rounded-end-2">
-            <>
-              <div className="text-center mb-4">
-                <h3 className="fw-bold text-dark">Welcome Back</h3>
-                <p className="text-muted">Sign in to access the system</p>
-              </div>
+        {/* Badge Number */}
+        <div className="mb-3">
+          <label className="form-label fw-semibold">ZRP Badge Number</label>
+          <input
+            type="text"
+            className="form-control"
+            placeholder="e.g. 1234"
+            value={loginCredentials.zrp_badge_number}
+            onChange={(e) =>
+              setLoginCredentials({ ...loginCredentials, zrp_badge_number: e.target.value })
+            }
+            onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+          />
+        </div>
 
-              {/* Login Method Tabs */}
-              <ul className="nav nav-pills gap-2 nav-justified mb-4">
-                <li className="nav-item">
-                  <button
-                    className='nav-link bg-primary text-dark'
-                  >
-                    <i className="bi bi-key"></i>
-                    Password
-                  </button>
-                </li>
-                <li className="nav-item">
-                  <button
-                    className='nav-link bg-primary text-dark'
-                  >
-                    <i className="bi bi-fingerprint"></i>
-                    Biometric
-                  </button>
-                </li>
-                <li className="nav-item">
-                  <button
-                    className='nav-link bg-primary text-dark'
-                  >
-                    <i className="bi bi-credit-card"></i>
-                    Smart Card
-                  </button>
-                </li>
-              </ul>
-
-              <form>
-                {/* Badge Number Field */}
-                <div className="mb-3">
-                  <label className="form-label fw-medium">
-                    <i className="bi bi-person-badge me-2"></i>
-                    Badge Number
-                  </label>
-                  <div className="input-group">
-                    <span className="input-group-text">ZRP-</span>
-                    <input
-                      type="text"
-                      className="form-control"
-                      name="zrp_badge_number"
-                      placeholder="Enter your badge number"
-                      onChange={(e) => setloginCredentials({...loginCredentials, zrp_badge_number: e.target.value})}
-                      required
-                    />
-                  </div>
-                  <small className="text-muted">Format: ZRP-XXXX</small>
-                </div>
-
-                {/* Conditional Fields based on Login Method */}
-                <div className="mb-3">
-                  <label className="form-label fw-medium">
-                    <i className="bi bi-lock me-2"></i>
-                    Password
-                  </label>
-                  <div className="input-group">
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      className="form-control"
-                      name="password"
-                      placeholder="Enter your password"
-                      onChange={(e) => setloginCredentials({...loginCredentials, password: e.target.value})}
-                      required
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-outline-secondary"
-                      onClick={() => setShowPassword(!showPassword)}
-                    >
-                      <i className={`bi ${showPassword ? 'bi-eye' : 'bi-eye-slash'}`}></i>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Remember Me & Forgot Password */}
-                <div className="d-flex justify-content-between align-items-center mb-4">
-                  <div className="form-check">
-                    <input
-                      type="checkbox"
-                      className="form-check-input"
-                      id="rememberMe"
-                    />
-                    <label className="form-check-label" htmlFor="rememberMe">
-                      Remember me
-                    </label>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn btn-link text-decoration-none p-0"
-                  >
-                    Forgot Password?
-                  </button>
-                </div>
-                
-
-                {/* Login Button */}
-                <button
-                  type="button"
-                  className="btn btn-primary w-100 py-2 mb-3"
-                  onClick={() => {
-                    console.log('Attempting login with credentials:', loginCredentials);
-                    axios.post('http://localhost:8000/api/public/auth/login/', loginCredentials)
-                      .then(response => {
-                        console.log('Login successful:', response.data);
-                        localStorage.setItem('token', response.data.access);
-                        localStorage.setItem('refresh', response.data.refresh);
-                        window.location.href = '/home';
-                      })
-                      .catch(error => {
-                        console.error('Login failed:', error);
-                      });
-                  }}
-                >
-                  <i className="bi bi-box-arrow-in-right me-2"></i>
-                  Sign In
-                </button>
-
-                {/* Alternative Login Methods */}
-                
-                {/* <div className="text-center">
-                  <div className="mb-3">
-                    <button
-                      type="button"
-                      className="btn btn-outline-primary btn-lg py-3 px-5"
-                    >
-                      <i className="bi bi-fingerprint fs-1 d-block mb-2"></i>
-                      Scan Fingerprint
-                    </button>
-                  </div>
-                  <p className="text-muted small">
-                    Place your finger on the scanner to authenticate
-                  </p>
-                </div>
-                
-                <div className="text-center">
-                  <div className="mb-3">
-                    <button
-                      type="button"
-                      className="btn btn-outline-primary btn-lg py-3 px-5"
-                    >
-                      <i className="bi bi-credit-card fs-1 d-block mb-2"></i>
-                      Insert Smart Card
-                    </button>
-                  </div>
-                  <p className="text-muted small">
-                    Insert your smart card into the reader
-                  </p>
-                </div> */}
-              </form>
-            </>
-            
-            <div className="row mt-4 g-3">
-              <div className="col-md-4">
-                <div className="card border-0 shadow-sm">
-                  <div className="card-body p-3">
-                    <i className="bi bi-shield-lock text-primary fs-4 mb-2"></i>
-                    <h6 className="fw-bold mb-1">Secure Access</h6>
-                    <small className="text-muted">Military-grade encryption</small>
-                  </div>
-                </div>
-              </div>
-              <div className="col-md-4">
-                <div className="card border-0 shadow-sm">
-                  <div className="card-body p-3">
-                    <i className="bi bi-clock-history text-primary fs-4 mb-2"></i>
-                    <h6 className="fw-bold mb-1">Session Timeout</h6>
-                    <small className="text-muted">Auto-logout after 30 mins</small>
-                  </div>
-                </div>
-              </div>
-              <div className="col-md-4">
-                <div className="card border-0 shadow-sm">
-                  <div className="card-body p-3">
-                    <i className="bi bi-journal-text text-primary fs-4 mb-2"></i>
-                    <h6 className="fw-bold mb-1">Audit Trail</h6>
-                    <small className="text-muted">All actions are logged</small>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Security Notice */}
-            <div className="text-center mt-4">
-              <div className="alert alert-warning py-2 mb-0" style={{ fontSize: '0.9rem' }}>
-                <i className="bi bi-exclamation-triangle me-2"></i>
-                This system is for authorized personnel only. All access is monitored.
-              </div>
-            </div>
-
-            {/* System Status */}
-            <div className="mt-3 d-flex justify-content-between align-items-center small text-muted">
-              <span>
-                <i className="bi bi-shield-check text-success me-1"></i>
-                System Secure
-              </span>
-              <span>
-                <i className="bi bi-clock me-1"></i>
-                Last Audit: Today 02:00
-              </span>
-            </div>
+        {/* Password */}
+        <div className="mb-4">
+          <label className="form-label fw-semibold">Password</label>
+          <div className="input-group">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              className="form-control"
+              placeholder="Enter your password"
+              value={loginCredentials.password}
+              onChange={(e) =>
+                setLoginCredentials({ ...loginCredentials, password: e.target.value })
+              }
+              onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+            />
+            <button
+              type="button"
+              className="btn btn-outline-secondary"
+              onClick={() => setShowPassword(!showPassword)}
+              tabIndex={-1}
+            >
+              <i className={`bi ${showPassword ? 'bi-eye-slash' : 'bi-eye'}`}></i>
+            </button>
           </div>
         </div>
+
+        {/* Remember Me / Forgot */}
+        <div className="d-flex justify-content-between align-items-center mb-4">
+          <div className="form-check">
+            <input type="checkbox" className="form-check-input" id="rememberMe" />
+            <label className="form-check-label" htmlFor="rememberMe">
+              Remember me
+            </label>
+          </div>
+          <button type="button" className="btn btn-link text-decoration-none p-0 small">
+            Forgot Password?
+          </button>
+        </div>
+
+        {/* Submit */}
+        <button
+          type="button"
+          className="btn btn-primary w-100 py-2"
+          onClick={handleLogin}
+          disabled={loading}
+        >
+          {loading ? (
+            <>
+              <span className="spinner-border spinner-border-sm me-2" role="status"></span>
+              Signing in…
+            </>
+          ) : (
+            <>
+              <i className="bi bi-box-arrow-in-right me-2"></i>
+              Sign In
+            </>
+          )}
+        </button>
       </div>
     </div>
   );
 }
-
-export default Login;
