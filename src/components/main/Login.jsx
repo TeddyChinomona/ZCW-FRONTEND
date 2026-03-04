@@ -6,12 +6,12 @@ import Logo from '/logo.jpg'
 function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [loginCredentials, setloginCredentials] = useState({
-    badgeNumber: '',
+    zrp_badge_number: '',
     password: ''
   })
   
   const Login_request = () =>{
-    axios.post('http://127.0.0.1/zrp/login/', loginCredentials)
+    axios.post('http://localhost:8000/api/public/auth/login/', loginCredentials)
     .then(response => {
       console.log(response.data);
     })
@@ -107,9 +107,9 @@ function Login() {
                     <input
                       type="text"
                       className="form-control"
-                      name="badgeNumber"
+                      name="zrp_badge_number"
                       placeholder="Enter your badge number"
-                      onChange={(e) => setloginCredentials({...loginCredentials, badgeNumber: e.target.value})}
+                      onChange={(e) => setloginCredentials({...loginCredentials, zrp_badge_number: e.target.value})}
                       required
                     />
                   </div>
@@ -168,7 +168,7 @@ function Login() {
                   className="btn btn-primary w-100 py-2 mb-3"
                   onClick={() => {
                     console.log('Attempting login with credentials:', loginCredentials);
-                    axios.post('http://127.0.0.1:8000/zrp/login/', loginCredentials)
+                    axios.post('http://localhost:8000/api/public/auth/login/', loginCredentials)
                       .then(response => {
                         console.log('Login successful:', response.data);
                         localStorage.setItem('token', response.data.access);
