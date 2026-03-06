@@ -51,7 +51,7 @@ export default function Login() {
       >
         {/* Logo / Header */}
         <div className="text-center mb-4">
-          <img src="/logo.jpg" alt="ZimCrimeWatch" height={64} className="mb-3" />
+          <img src="/logo.jpg" alt="ZimCrimeWatch" height={64} className="mb-3 rounded-circle login-img" />
           <h4 className="fw-bold">ZIM CRIME WATCH</h4>
           <p className="text-muted small">ZRP Officer Portal</p>
         </div>
