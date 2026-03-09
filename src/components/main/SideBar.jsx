@@ -8,6 +8,8 @@ function SideBar({ setActiveComponent, activeComponent }) {
     "Analytics",
     "Statistics",
     "Reports",
+    "Data Upload",
+    "ML Training",
     "Settings",
   ];
 

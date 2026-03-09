@@ -196,3 +196,48 @@ export const getPublicCrimes = (params = {}) =>
 /** GET /api/public/crime-types/ */
 export const getPublicCrimeTypes = () =>
   api.get('/public/crime-types/').then((r) => r.data);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATA UPLOAD  — add this block to the bottom of src/services/crimeService.js
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * uploadCSV
+ * ─────────────────────────────────────────────────────────────────────────────
+ * POST /api/zrp/data/upload-csv/
+ *
+ * Sends a CSV file to the backend bulk-upload endpoint.
+ * Must be sent as multipart/form-data with the file under the key "file".
+ *
+ * The shared `api` Axios instance automatically attaches the JWT Bearer token
+ * via its request interceptor, so no manual auth header is needed here.
+ *
+ * @param {File}     file           — the File object from an <input type="file">
+ * @param {Function} onProgress     — optional callback(percentComplete: number)
+ * @returns {Promise<{ created: number, skipped: number, errors: Array }>}
+ */
+export const uploadCSV = (file, onProgress) => {
+  // Build a FormData payload — this forces Axios to use multipart/form-data
+  // and properly encode the binary file alongside any metadata fields.
+  const formData = new FormData();
+  formData.append('file', file); // key must match request.FILES.get("file") in Django
+
+  return api
+    .post('/zrp/data/upload-csv/', formData, {
+      // Override the default 'application/json' Content-Type so Axios sets
+      // the correct multipart boundary that the server needs to parse the body.
+      headers: { 'Content-Type': 'multipart/form-data' },
+
+      // onUploadProgress fires as the browser streams the file to the server.
+      // loaded / total gives us a 0–100 percentage we can pass to a progress bar.
+      onUploadProgress: onProgress
+        ? (progressEvent) => {
+            const percent = progressEvent.total
+              ? Math.round((progressEvent.loaded * 100) / progressEvent.total)
+              : 0;
+            onProgress(percent);
+          }
+        : undefined,
+    })
+    .then((r) => r.data);
+};
