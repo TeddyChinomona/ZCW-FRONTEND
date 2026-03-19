@@ -20,7 +20,7 @@ import api from './api';
  * @returns {Promise<{ access: string, refresh: string, user: object }>}
  */
 export async function login(zrp_badge_number, password) {
-  const response = await api.post('/public/auth/login/', {
+  const response = await api.post('https://d0fe-2605-59c1-3525-a310-6411-19be-d719-3b70.ngrok-free.app/public/auth/login/', {
     zrp_badge_number,
     password,
   });
