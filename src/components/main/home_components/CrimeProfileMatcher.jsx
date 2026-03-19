@@ -1,74 +1,153 @@
 /**
- * src/components/main/home_components/CrimeProfileMatcher.jsx  (updated)
+ * src/components/main/home_components/CrimeProfileMatcher.jsx
  * ─────────────────────────────────────────────────────────────────────────────
- * Changes from original:
- *  • Removed all hardcoded suspectProfiles, crimeCases, moPatterns mock arrays
- *  • On mount: loads real incidents from GET /api/zrp/incidents/
- *  • Search input now filters live incident data by case reference, crime type,
- *    suburb, and modus operandi description
- *  • Selecting an incident and clicking "Find Similar" calls:
- *      POST /api/zrp/analytics/profile-match/  (RandomForest ML backend)
- *    and displays the returned similar cases
- *  • All UI structure (tabs, MatchCard, detail panel) preserved and adapted
+ * Layout addition:
+ *  The middle column previously had empty space below the "Match Settings"
+ *  card. Two new cards have been added to fill it meaningfully:
+ *
+ *  1. M.O. Pattern Frequency  — counts the most common modus operandi keywords
+ *     across all loaded incidents and renders them as labelled progress bars.
+ *     This gives investigators a quick sense of dominant attack patterns before
+ *     they run a match, and updates reactively as the incident list filters.
+ *
+ *  2. Dataset Breakdown  — a compact table showing how many incidents exist per
+ *     crime type, with a colour-coded severity indicator. Helps the user pick
+ *     the right incident to match against without having to scroll the left list.
+ *
+ * Bug fix retained from previous version:
+ *  getCrimeTypeName() safely resolves crime_type whether it is an object
+ *  { id, name } or a plain string, preventing the original TypeError.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { getIncidents, runProfileMatch } from '../../../services/crimeService';
 
-// ─── Risk badge helper ────────────────────────────────────────────────────────
-const riskBadge = (level) => {
-  const map = { Critical: 'danger', High: 'warning', Medium: 'info', Low: 'success' };
-  return map[level] ?? 'secondary';
+// ─── Safely extract the crime type name ──────────────────────────────────────
+const getCrimeTypeName = (incident) => {
+  const ct = incident?.crime_type;
+  if (!ct) return 'Unknown';
+  if (typeof ct === 'string') return ct;
+  if (typeof ct === 'object' && ct.name) return ct.name;
+  return 'Unknown';
 };
 
-// ─── Incident card ────────────────────────────────────────────────────────────
+// ─── Build a short display ID ─────────────────────────────────────────────────
+const buildCaseId = (incident) => {
+  if (!incident) return '—';
+  const typeName = getCrimeTypeName(incident);          // always a string
+  return `${typeName.slice(0, 3).toUpperCase()}-${String(incident.id).padStart(4, '0')}`;
+};
+
+// ─── Derive top MO keywords from an array of incidents ───────────────────────
+// Splits each modus_operandi / description string into words, strips stopwords,
+// and returns the top N by frequency as [{ word, count }].
+const STOPWORDS = new Set([
+  'the','and','a','an','to','of','in','on','was','were','is','at','by','from',
+  'with','into','for','had','has','that','this','which','while','then','their',
+  'have','been','its','be','as','or','but','not','are','it','he','she','they',
+]);
+
+const getMOKeywords = (incidents, topN = 8) => {
+  const freq = {};
+  incidents.forEach(inc => {
+    const text = (inc.modus_operandi ?? inc.description ?? '').toLowerCase();
+    text.replace(/[^a-z\s]/g, '').split(/\s+/).forEach(w => {
+      if (w.length > 3 && !STOPWORDS.has(w)) freq[w] = (freq[w] ?? 0) + 1;
+    });
+  });
+  return Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN)
+    .map(([word, count]) => ({ word, count }));
+};
+
+// ─── Count incidents per crime type ──────────────────────────────────────────
+const getCrimeTypeCounts = (incidents) => {
+  const counts = {};
+  incidents.forEach(inc => {
+    const name = getCrimeTypeName(inc);
+    counts[name] = (counts[name] ?? 0) + 1;
+  });
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => ({ name, count }));
+};
+
+// ─── Severity colour by incident count ───────────────────────────────────────
+const severityClass = (count, max) => {
+  const ratio = count / max;
+  if (ratio >= 0.7) return 'danger';
+  if (ratio >= 0.4) return 'warning';
+  return 'success';
+};
+
+// ─── Incident list card ───────────────────────────────────────────────────────
 const IncidentCard = ({ incident, selected, onSelect }) => (
   <div
     className={`card mb-2 border ${selected ? 'border-primary shadow' : ''}`}
-    style={{ cursor: 'pointer' }}
+    style={{ cursor: 'pointer', transition: 'box-shadow 0.15s' }}
     onClick={() => onSelect(incident)}
   >
     <div className="card-body py-2 px-3">
       <div className="d-flex justify-content-between align-items-start">
         <div>
-          <strong className="text-primary">#{incident.id}</strong>
-          <span className="ms-2 text-muted small">{incident.crime_type?.name ?? 'Unknown'}</span>
+          <strong className="text-primary" style={{ fontSize: '0.8rem' }}>
+            {buildCaseId(incident)}
+          </strong>
+          <span className="ms-2 text-muted small">{getCrimeTypeName(incident)}</span>
         </div>
-        <span className={`badge bg-${incident.status === 'resolved' ? 'success' : 'warning'}`}>
-          {incident.status}
+        <span
+          className={`badge ${
+            incident.status === 'resolved' || incident.status === 'closed'
+              ? 'bg-success'
+              : incident.status === 'investigating'
+              ? 'bg-warning text-dark'
+              : 'bg-secondary'
+          }`}
+          style={{ fontSize: '0.65rem' }}
+        >
+          {incident.status ?? '—'}
         </span>
       </div>
       <div className="small text-muted mt-1">
-        <i className="bi bi-geo-alt me-1"></i>{incident.suburb ?? 'Unknown area'}
+        <i className="bi bi-geo-alt me-1"></i>
+        {incident.suburb ?? incident.area ?? 'Unknown area'}
         <span className="ms-3">
           <i className="bi bi-calendar me-1"></i>
           {incident.timestamp ? new Date(incident.timestamp).toLocaleDateString() : '—'}
         </span>
       </div>
-      {incident.description && (
-        <p className="small mb-0 mt-1 text-truncate" style={{ maxWidth: 280 }}>
-          {incident.description}
+      {(incident.description || incident.modus_operandi) && (
+        <p className="small mb-0 mt-1 text-muted text-truncate" style={{ maxWidth: 280 }}>
+          {incident.description ?? incident.modus_operandi}
         </p>
       )}
     </div>
   </div>
 );
 
-// ─── Similar case card ────────────────────────────────────────────────────────
+// ─── Similar case result card ─────────────────────────────────────────────────
 const SimilarCard = ({ incident }) => (
-  <div className="card mb-2 border-success">
+  <div className="card mb-2" style={{ borderLeft: '3px solid #1e8449' }}>
     <div className="card-body py-2 px-3">
-      <div className="d-flex justify-content-between">
-        <strong className="text-success">#{incident.id}</strong>
-        <span className="badge bg-success bg-opacity-10 text-success">
-          {incident.similarity_score != null ? `${(incident.similarity_score * 100).toFixed(0)}% match` : 'Similar'}
+      <div className="d-flex justify-content-between align-items-start">
+        <strong className="text-success" style={{ fontSize: '0.8rem' }}>
+          {buildCaseId(incident)}
+        </strong>
+        <span className="badge bg-success bg-opacity-10 text-success" style={{ fontSize: '0.65rem' }}>
+          {incident.similarity_score != null
+            ? `${(incident.similarity_score * 100).toFixed(0)}% match`
+            : 'Similar'}
         </span>
       </div>
       <div className="small text-muted">
-        {incident.crime_type?.name ?? '—'} &mdash; {incident.suburb ?? '—'}
+        {getCrimeTypeName(incident)} &mdash;{' '}
+        {incident.suburb ?? incident.area ?? '—'}
       </div>
-      {incident.description && (
-        <p className="small text-muted mb-0 text-truncate">{incident.description}</p>
+      {(incident.description || incident.modus_operandi) && (
+        <p className="small text-muted mb-0 mt-1 text-truncate">
+          {incident.description ?? incident.modus_operandi}
+        </p>
       )}
     </div>
   </div>
@@ -76,92 +155,103 @@ const SimilarCard = ({ incident }) => (
 
 // ─── Main component ───────────────────────────────────────────────────────────
 function CrimeProfileMatcher() {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [matchThreshold, setMatchThreshold] = useState(5); // top_n
+  const [searchQuery, setSearchQuery]           = useState('');
+  const [matchThreshold, setMatchThreshold]     = useState(5);
   const [selectedIncident, setSelectedIncident] = useState(null);
-  const [similarCases, setSimilarCases] = useState([]);
-  const [matchLoading, setMatchLoading] = useState(false);
-  const [matchError, setMatchError] = useState('');
+  const [similarCases, setSimilarCases]         = useState([]);
+  const [matchLoading, setMatchLoading]         = useState(false);
+  const [matchError, setMatchError]             = useState('');
+  const [incidents, setIncidents]               = useState([]);
+  const [loading, setLoading]                   = useState(false);
+  const [error, setError]                       = useState('');
+  const [filters, setFilters]                   = useState({ crimeType: 'all', status: 'all' });
 
-  // ── Incidents from API ───────────────────────────────────────────────────
-  const [incidents, setIncidents] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [filters, setFilters] = useState({ crimeType: 'all', status: 'all' });
-
+  // ── Fetch incidents ────────────────────────────────────────────────────────
   const fetchIncidents = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
       const params = {};
       if (filters.crimeType !== 'all') params.crime_type_id = filters.crimeType;
-      if (filters.status !== 'all') params.status = filters.status;
+      if (filters.status    !== 'all') params.status        = filters.status;
       const data = await getIncidents(params);
-      setIncidents(Array.isArray(data) ? data : data.results ?? []);
+      setIncidents(Array.isArray(data) ? data : (data.results ?? []));
     } catch (err) {
-      console.error('Incidents fetch error:', err);
+      console.error('[CPM] fetch error:', err);
       setError('Failed to load incidents. Please try again.');
     } finally {
       setLoading(false);
     }
   }, [filters]);
 
-  useEffect(() => {
-    fetchIncidents();
-  }, [fetchIncidents]);
+  useEffect(() => { fetchIncidents(); }, [fetchIncidents]);
 
-  // ── Client-side search over loaded incidents ──────────────────────────────
+  // ── Client-side search ────────────────────────────────────────────────────
   const filteredIncidents = useMemo(() => {
     if (!searchQuery.trim()) return incidents;
     const q = searchQuery.toLowerCase();
-    return incidents.filter(
-      (inc) =>
-        String(inc.id).includes(q) ||
-        inc.crime_type?.name?.toLowerCase().includes(q) ||
-        inc.suburb?.toLowerCase().includes(q) ||
-        inc.description?.toLowerCase().includes(q) ||
-        inc.modus_operandi?.toLowerCase().includes(q),
+    return incidents.filter(inc =>
+      String(inc.id).includes(q) ||
+      getCrimeTypeName(inc).toLowerCase().includes(q) ||
+      (inc.suburb ?? inc.area ?? '').toLowerCase().includes(q) ||
+      (inc.description ?? inc.modus_operandi ?? '').toLowerCase().includes(q),
     );
   }, [incidents, searchQuery]);
 
-  // ── Run profile match on the backend ────────────────────────────────────
+  // ── Derived analytics for the new middle-column cards ─────────────────────
+  // Recompute whenever the loaded incident list changes.
+  const moKeywords    = useMemo(() => getMOKeywords(incidents),        [incidents]);
+  const typeCounts    = useMemo(() => getCrimeTypeCounts(incidents),   [incidents]);
+  const maxTypeCount  = typeCounts[0]?.count ?? 1;
+  const maxKeyword    = moKeywords[0]?.count ?? 1;
+
+  // ── Run profile match ─────────────────────────────────────────────────────
   const handleFindSimilar = async () => {
     if (!selectedIncident) return;
     setMatchLoading(true);
     setMatchError('');
     setSimilarCases([]);
     try {
-      const result = await runProfileMatch(selectedIncident.id, matchThreshold);
-      setSimilarCases(result.similar_cases ?? []);
-      if ((result.similar_cases ?? []).length === 0) {
-        setMatchError('No similar cases found. The model may need more data or re-training.');
-      }
+      const result  = await runProfileMatch(selectedIncident.id, matchThreshold);
+      const matches = result.matches ?? result.similar_cases ?? [];
+      setSimilarCases(matches);
+      if (matches.length === 0)
+        setMatchError('No similar cases found. The model may need more training data.');
     } catch (err) {
-      const detail = err.response?.data?.detail ?? 'Profile matching failed. Ensure the ML model is trained.';
-      setMatchError(detail);
+      setMatchError(err.response?.data?.detail ?? 'Profile matching failed. Please try again.');
     } finally {
       setMatchLoading(false);
     }
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="topbar container-fluid">
-      <div className="container-fluid">
-        {/* Header */}
-        <header className="d-flex justify-content-between align-items-center py-0 border-bottom mb-4">
-          <div>
-            <h1 className="display-6 fw-bold text-dark">
-              <i className="bi bi-person-lines-fill me-3 text-primary"></i>
-              Crime Profile Matcher
-            </h1>
-            <p className="text-muted small mb-0">
-              Select an incident then click <strong>Find Similar Cases</strong> to run the RandomForest ML matcher.
-            </p>
-          </div>
-          <button className="btn btn-sm btn-outline-secondary" onClick={fetchIncidents} disabled={loading}>
-            <i className={`bi bi-arrow-repeat ${loading ? 'spin' : ''}`}></i>
+    <div className="topbar container-fluid p-0">
+
+      {/* ── Sticky page header ──────────────────────────────────────────── */}
+      <div className="page-topbar">
+        <div>
+          <h1 className="page-title mb-0" style={{ fontSize: '1rem' }}>
+            <i className="bi bi-diagram-3"></i> Crime Profile Matcher
+          </h1>
+          <small className="text-muted" style={{ fontSize: '0.72rem', marginLeft: '26px' }}>
+            RandomForest ML — find incidents with similar modus operandi
+          </small>
+        </div>
+        <div className="topbar-actions">
+          <button
+            className="btn btn-sm btn-outline-secondary"
+            onClick={fetchIncidents}
+            disabled={loading}
+          >
+            <i className={`bi bi-arrow-repeat ${loading ? 'spin' : ''} me-1`}></i>
+            Reload
           </button>
-        </header>
+        </div>
+      </div>
+
+      {/* ── Content ─────────────────────────────────────────────────────── */}
+      <div className="page-content">
 
         {error && (
           <div className="alert alert-danger alert-dismissible mb-3" role="alert">
@@ -170,102 +260,159 @@ function CrimeProfileMatcher() {
           </div>
         )}
 
-        <div className="row g-4">
-          {/* ── Left panel: incident list ─────────────────────────────────── */}
-          <div className="col-md-5">
+        <div className="row g-3">
+
+          {/* ════════════════════════════════════════════════════════════
+              LEFT COL — incident search list
+          ════════════════════════════════════════════════════════════ */}
+          <div className="col-md-4">
             <div className="card shadow-sm h-100">
-              <div className="card-header bg-white">
-                <h5 className="mb-2"><i className="bi bi-search me-2 text-primary"></i>Search Incidents</h5>
-                <input
-                  type="text"
-                  className="form-control form-control-sm"
-                  placeholder="ID, crime type, suburb, MO…"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-                <div className="d-flex gap-2 mt-2">
-                  <select
-                    className="form-select form-select-sm"
-                    value={filters.status}
-                    onChange={(e) => setFilters({ ...filters, status: e.target.value })}
-                  >
-                    <option value="all">All statuses</option>
-                    <option value="open">Open</option>
-                    <option value="resolved">Resolved</option>
-                    <option value="closed">Closed</option>
-                  </select>
-                </div>
+              <div className="card-header card-header-accent-blue d-flex align-items-center justify-content-between">
+                <span><i className="bi bi-list-ul me-2"></i>Incident List</span>
+                <span className="badge badge-reported">{filteredIncidents.length}</span>
               </div>
-              <div className="card-body overflow-auto" style={{ maxHeight: 520 }}>
-                {loading ? (
-                  <div className="text-center py-4">
-                    <div className="spinner-border spinner-border-sm text-primary" role="status" />
-                    <p className="text-muted small mt-2">Loading incidents…</p>
-                  </div>
-                ) : filteredIncidents.length === 0 ? (
-                  <p className="text-muted text-center py-4">No incidents found</p>
-                ) : (
-                  filteredIncidents.map((inc) => (
+              <div className="card-body p-2">
+                {/* Search */}
+                <div className="input-group input-group-sm mb-2">
+                  <span className="input-group-text"><i className="bi bi-search"></i></span>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="Search by type, area, M.O.…"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                  />
+                  {searchQuery && (
+                    <button className="btn btn-outline-secondary" onClick={() => setSearchQuery('')}>
+                      <i className="bi bi-x"></i>
+                    </button>
+                  )}
+                </div>
+                {/* Status filter */}
+                <select
+                  className="form-select form-select-sm mb-2"
+                  value={filters.status}
+                  onChange={e => setFilters(f => ({ ...f, status: e.target.value }))}
+                >
+                  <option value="all">All statuses</option>
+                  <option value="reported">Reported</option>
+                  <option value="investigating">Investigating</option>
+                  <option value="closed">Closed</option>
+                </select>
+                {/* Scrollable list */}
+                <div style={{ maxHeight: '100vh', overflowY: 'auto' }}>
+                  {loading && (
+                    <div className="text-center py-4">
+                      <div className="spinner-border spinner-border-sm text-primary" role="status" />
+                      <p className="text-muted small mt-2 mb-0">Loading incidents…</p>
+                    </div>
+                  )}
+                  {!loading && filteredIncidents.length === 0 && (
+                    <p className="text-muted text-center py-4 small mb-0">
+                      No incidents match the current filters.
+                    </p>
+                  )}
+                  {!loading && filteredIncidents.map(inc => (
                     <IncidentCard
                       key={inc.id}
                       incident={inc}
                       selected={selectedIncident?.id === inc.id}
                       onSelect={setSelectedIncident}
                     />
-                  ))
-                )}
+                  ))}
+                </div>
               </div>
-              <div className="card-footer bg-white small text-muted">
-                {filteredIncidents.length} incident{filteredIncidents.length !== 1 ? 's' : ''} shown
+              {/* Footer count */}
+              <div className="card-footer bg-white py-2" style={{ fontSize: '0.75rem', color: '#6c757d' }}>
+                <i className="bi bi-info-circle me-1"></i>
+                {incidents.length} total incidents loaded
               </div>
             </div>
           </div>
 
-          {/* ── Middle panel: selected incident + match controls ─────────── */}
-          <div className="col-md-3">
-            <div className="card shadow-sm mb-3">
-              <div className="card-header bg-white">
-                <h6 className="mb-0"><i className="bi bi-file-earmark-text me-2 text-primary"></i>Selected Incident</h6>
+          {/* ════════════════════════════════════════════════════════════
+              MIDDLE COL — selected incident detail + match controls
+                           + M.O. pattern analysis + dataset breakdown
+          ════════════════════════════════════════════════════════════ */}
+          <div className="col-md-4 d-flex flex-column gap-3">
+
+            {/* ── Selected incident detail ──────────────────────────── */}
+            <div className="card shadow-sm">
+              <div className="card-header card-header-accent-dark">
+                <i className="bi bi-file-earmark-text me-2"></i>Selected Incident
               </div>
               <div className="card-body">
                 {!selectedIncident ? (
-                  <p className="text-muted small text-center py-3">Select an incident from the list</p>
+                  <p className="text-muted text-center py-3 small mb-0">
+                    <i className="bi bi-hand-index-thumb fs-3 d-block mb-2 text-muted"></i>
+                    Click an incident on the left to select it
+                  </p>
                 ) : (
                   <>
                     <table className="table table-sm table-borderless mb-0">
                       <tbody>
-                        <tr><td className="text-muted">ID</td><td><strong>#{selectedIncident.id}</strong></td></tr>
-                        <tr><td className="text-muted">Type</td><td>{selectedIncident.crime_type?.name ?? '—'}</td></tr>
-                        <tr><td className="text-muted">Suburb</td><td>{selectedIncident.suburb ?? '—'}</td></tr>
-                        <tr><td className="text-muted">Status</td><td>
-                          <span className={`badge bg-${selectedIncident.status === 'resolved' ? 'success' : 'warning'}`}>
-                            {selectedIncident.status}
-                          </span>
-                        </td></tr>
-                        <tr><td className="text-muted">Date</td><td>{selectedIncident.timestamp ? new Date(selectedIncident.timestamp).toLocaleDateString() : '—'}</td></tr>
+                        <tr>
+                          <td className="text-muted" style={{ width: '35%' }}>Case ID</td>
+                          <td><strong className="text-primary">{buildCaseId(selectedIncident)}</strong></td>
+                        </tr>
+                        <tr>
+                          <td className="text-muted">Crime Type</td>
+                          <td>{getCrimeTypeName(selectedIncident)}</td>
+                        </tr>
+                        <tr>
+                          <td className="text-muted">Area</td>
+                          <td>{selectedIncident.suburb ?? selectedIncident.area ?? '—'}</td>
+                        </tr>
+                        <tr>
+                          <td className="text-muted">Status</td>
+                          <td>
+                            <span className={`badge ${
+                              selectedIncident.status === 'resolved' || selectedIncident.status === 'closed'
+                                ? 'badge-closed'
+                                : selectedIncident.status === 'investigating'
+                                ? 'badge-investigating'
+                                : 'badge-reported'
+                            }`}>
+                              {selectedIncident.status}
+                            </span>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="text-muted">Date</td>
+                          <td>
+                            {selectedIncident.timestamp
+                              ? new Date(selectedIncident.timestamp).toLocaleDateString()
+                              : '—'}
+                          </td>
+                        </tr>
                       </tbody>
                     </table>
-                    {selectedIncident.description && (
-                      <p className="small text-muted mt-2 border-top pt-2">{selectedIncident.description}</p>
+                    {(selectedIncident.description || selectedIncident.modus_operandi) && (
+                      <p className="small text-muted mt-2 border-top pt-2 mb-0">
+                        <strong>M.O.:</strong>{' '}
+                        {selectedIncident.description ?? selectedIncident.modus_operandi}
+                      </p>
                     )}
                   </>
                 )}
               </div>
             </div>
 
-            {/* Match controls */}
+            {/* ── Match settings ────────────────────────────────────── */}
             <div className="card shadow-sm">
-              <div className="card-header bg-white">
-                <h6 className="mb-0"><i className="bi bi-sliders me-2 text-primary"></i>Match Settings</h6>
+              <div className="card-header card-header-accent-dark">
+                <i className="bi bi-sliders me-2"></i>Match Settings
               </div>
               <div className="card-body">
-                <label className="form-label small">Top N results: <strong>{matchThreshold}</strong></label>
+                <label className="form-label">
+                  Top N results: <strong>{matchThreshold}</strong>
+                </label>
                 <input
                   type="range"
                   className="form-range mb-3"
                   min={3} max={20} step={1}
                   value={matchThreshold}
-                  onChange={(e) => setMatchThreshold(Number(e.target.value))}
+                  onChange={e => setMatchThreshold(Number(e.target.value))}
                 />
                 <button
                   className="btn btn-primary w-100"
@@ -273,48 +420,166 @@ function CrimeProfileMatcher() {
                   disabled={!selectedIncident || matchLoading}
                 >
                   {matchLoading ? (
-                    <><span className="spinner-border spinner-border-sm me-2" role="status" />Matching…</>
+                    <>
+                      <span className="spinner-border spinner-border-sm me-2" role="status" />
+                      Matching…
+                    </>
                   ) : (
                     <><i className="bi bi-cpu me-2"></i>Find Similar Cases</>
                   )}
                 </button>
+                {!selectedIncident && (
+                  <p className="text-muted small mt-2 mb-0 text-center">
+                    Select an incident first
+                  </p>
+                )}
               </div>
             </div>
-          </div>
 
-          {/* ── Right panel: similar cases results ───────────────────────── */}
-          <div className="col-md-4">
-            <div className="card shadow-sm h-100">
-              <div className="card-header bg-white d-flex justify-content-between align-items-center">
-                <h6 className="mb-0"><i className="bi bi-diagram-3 me-2 text-success"></i>Similar Cases</h6>
-                {similarCases.length > 0 && (
-                  <span className="badge bg-success">{similarCases.length} found</span>
+            {/* ── M.O. Pattern Frequency ────────────────────────────── */}
+            {/*
+             * Analyses the modus_operandi / description text of every loaded
+             * incident, extracts the most frequently appearing keywords (after
+             * stripping stopwords), and renders them as labelled progress bars.
+             * Helps investigators spot dominant attack patterns at a glance —
+             * e.g. if "vehicle" and "smashed" dominate, vehicle break-ins are
+             * the primary concern in the current dataset filter.
+             */}
+            <div className="card shadow-sm">
+              <div className="card-header card-header-accent-blue">
+                <i className="bi bi-text-paragraph me-2"></i>M.O. Pattern Frequency
+                <span
+                  className="ms-2 text-muted"
+                  style={{ fontSize: '0.7rem', fontWeight: 400 }}
+                >
+                  top keywords across loaded incidents
+                </span>
+              </div>
+              <div className="card-body pb-2">
+                {moKeywords.length === 0 ? (
+                  <p className="text-muted small mb-0 text-center py-2">
+                    No modus operandi data available.
+                  </p>
+                ) : (
+                  moKeywords.map(({ word, count }) => (
+                    <div key={word} className="mb-2">
+                      <div className="d-flex justify-content-between" style={{ fontSize: '0.78rem' }}>
+                        {/* Capitalise the first letter of each keyword */}
+                        <span className="text-capitalize text-dark">{word}</span>
+                        <span className="text-muted">{count}×</span>
+                      </div>
+                      <div className="progress" style={{ height: '5px' }}>
+                        <div
+                          className="progress-bar bg-primary"
+                          style={{ width: `${(count / maxKeyword) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))
                 )}
               </div>
-              <div className="card-body overflow-auto" style={{ maxHeight: 560 }}>
+            </div>
+
+            {/* ── Dataset Breakdown by Crime Type ──────────────────── */}
+            {/*
+             * Shows the count of loaded incidents per crime type in a compact
+             * table with a colour-coded severity badge. High-count types are
+             * marked red, medium yellow, low green — matching ZRP operational
+             * risk language. Helps analysts quickly identify which crime types
+             * dominate the current filter before running a profile match.
+             */}
+            <div className="card shadow-sm">
+              <div className="card-header card-header-accent-dark">
+                <i className="bi bi-bar-chart-steps me-2"></i>Dataset Breakdown
+                <span
+                  className="ms-2 text-muted"
+                  style={{ fontSize: '0.7rem', fontWeight: 400 }}
+                >
+                  incidents by crime type
+                </span>
+              </div>
+              <div className="card-body p-0">
+                {typeCounts.length === 0 ? (
+                  <p className="text-muted small mb-0 text-center py-3">
+                    No data loaded.
+                  </p>
+                ) : (
+                  <table className="table table-sm mb-0">
+                    <thead>
+                      <tr>
+                        <th>Crime Type</th>
+                        <th className="text-end">Count</th>
+                        <th className="text-end">Share</th>
+                        <th className="text-center">Level</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {typeCounts.map(({ name, count }) => {
+                        const pct  = incidents.length
+                          ? ((count / incidents.length) * 100).toFixed(1)
+                          : '0.0';
+                        const sev  = severityClass(count, maxTypeCount);
+                        const sevLabel = sev === 'danger' ? 'High' : sev === 'warning' ? 'Med' : 'Low';
+                        return (
+                          <tr key={name}>
+                            <td style={{ fontSize: '0.78rem' }}>{name}</td>
+                            <td className="text-end fw-semibold" style={{ fontSize: '0.78rem' }}>{count}</td>
+                            <td className="text-end text-muted" style={{ fontSize: '0.75rem' }}>{pct}%</td>
+                            <td className="text-center">
+                              <span className={`badge bg-${sev} ${sev === 'warning' ? 'text-dark' : ''}`}
+                                style={{ fontSize: '0.6rem', minWidth: '32px' }}>
+                                {sevLabel}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+          </div>{/* end middle col */}
+
+          {/* ════════════════════════════════════════════════════════════
+              RIGHT COL — similar cases results
+          ════════════════════════════════════════════════════════════ */}
+          <div className="col-md-4">
+            <div className="card shadow-sm h-100">
+              <div className="card-header card-header-accent-green d-flex align-items-center justify-content-between">
+                <span><i className="bi bi-diagram-3 me-2"></i>Similar Cases</span>
+                {similarCases.length > 0 && (
+                  <span className="badge badge-closed">{similarCases.length} found</span>
+                )}
+              </div>
+              <div className="card-body overflow-auto" style={{ maxHeight: 640 }}>
                 {matchError && (
-                  <div className="alert alert-warning py-2 small">{matchError}</div>
+                  <div className="alert alert-warning py-2 mb-2" style={{ fontSize: '0.8rem' }}>
+                    <i className="bi bi-exclamation-triangle me-2"></i>{matchError}
+                  </div>
                 )}
                 {!matchLoading && similarCases.length === 0 && !matchError && (
-                  <p className="text-muted text-center py-4">
+                  <p className="text-muted text-center py-5 small mb-0">
                     <i className="bi bi-cpu fs-2 d-block mb-2 text-muted"></i>
                     Select an incident and run the matcher to see results
                   </p>
                 )}
                 {matchLoading && (
-                  <div className="text-center py-4">
+                  <div className="text-center py-5">
                     <div className="spinner-border text-success" role="status" />
                     <p className="text-muted small mt-2">Running RandomForest matcher…</p>
                   </div>
                 )}
-                {similarCases.map((inc) => (
+                {similarCases.map(inc => (
                   <SimilarCard key={inc.id} incident={inc} />
                 ))}
               </div>
             </div>
           </div>
-        </div>
-      </div>
+
+        </div>{/* end row */}
+      </div>{/* end page-content */}
     </div>
   );
 }

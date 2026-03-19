@@ -1,105 +1,712 @@
-body{
-    min-height: 100vh;
-    max-height: 100vh;
-    background: linear-gradient(rgba(0, 0, 0, 0.822), rgba(0, 0, 0, 0.822)),url('../public/logo.jpg');
-    background-size: cover;
-    background-position: center;
+/* =============================================================================
+   ZimCrimeWatch — Global Stylesheet
+   Stack : Bootstrap 5 + Bootstrap Icons (imported in main.jsx / App.jsx)
+   Theme : Light, professional government/law-enforcement dashboard
+   Palette:
+     Sidebar     #1e2d3d  (darkened from #2c3e50 for better contrast)
+     Active      #2980b9  (ZRP blue — one consistent accent)
+     Primary     #1565C0  (Bootstrap primary override — deep institutional blue)
+     Danger      #c0392b
+     Success     #1e8449
+     Warning     #b7770d
+     Text-muted  #6c757d
+   ============================================================================= */
+ 
+/* ── Google Font import — professional, institutional feel ────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+ 
+/* ── CSS Custom Properties (single source of truth for colours) ──────────── */
+:root {
+  /* Brand palette */
+  --zcw-sidebar-bg:      #1e2d3d;  /* main sidebar background                */
+  --zcw-sidebar-hover:   rgba(255,255,255,0.07);
+  --zcw-sidebar-active:  rgba(41,128,185,0.20);
+  --zcw-accent:          #2980b9;  /* active/hover left-border accent         */
+  --zcw-accent-dark:     #1a5276;
+ 
+  /* Bootstrap primary override */
+  --bs-primary:          #1565C0;
+  --bs-primary-rgb:      21,101,192;
+ 
+  /* Card & surface colours */
+  --zcw-card-header-bg:  #f8f9fa;  /* UNIFORM card header — light grey        */
+  --zcw-card-header-border: #dee2e6;
+ 
+  /* Section-specific card header accents (top-border only, not full bg) */
+  --zcw-header-accent-blue:    #1565C0;
+  --zcw-header-accent-green:   #1e8449;
+  --zcw-header-accent-red:     #c0392b;
+  --zcw-header-accent-orange:  #d35400;
+  --zcw-header-accent-dark:    #1e2d3d;
+ 
+  /* Typography */
+  --zcw-font:            'Inter', system-ui, -apple-system, sans-serif;
+  --zcw-font-size-base:  0.875rem;  /* 14 px — compact for data-dense UI      */
 }
-
-#root{
-    min-height: 100vh;
-    max-height: 100vh;
+ 
+/* ── Base reset ───────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
 }
-
+ 
+html, body, #root {
+  min-height: 100vh;
+  max-height: 100vh;
+  font-family: var(--zcw-font);
+  font-size: var(--zcw-font-size-base);
+  color: #212529;
+  background-color: #f0f2f5;  /* subtle page background behind the layout   */
+}
+ 
+body {
+  /* Retain logo background only on login; the app shell overrides below */
+  background: linear-gradient(rgba(0,0,0,0.82), rgba(0,0,0,0.82)),
+              url('/logo.jpg') center/cover no-repeat;
+}
+ 
+/* The app shell (Home) overrides the body background so the dashboard
+   sits on a clean grey surface rather than the blurred logo.            */
+.app-shell {
+  background: #f0f2f5;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   SIDEBAR
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
 .sidebar {
-        background-color: #2c3e50; /* Dark blue-grey */
-        color: white;
-        min-height: 100vh;
-        display: flex;
-        flex-direction: column;
-        box-shadow: 2px 0 5px rgba(0,0,0,0.1);
-        transition: all 0.3s;
-    }
-
-    .logo {
-        padding: 5px;
-        align-items: center;
-        border-bottom: 1px solid rgba(255,255,255,0.1);
-    }
-
-    .logo img {
-        width: 60px;
-        height: 60px;
-        border-radius: 50%;
-        margin-right: 10px;
-        object-fit: cover;
-        background: white;
-    }
-
-    .logo h1 {
-        font-size: 1.2rem;
-        margin: 0;
-        font-weight: 600;
-    }
-
-    /* Menu Styling */
-    .menu {
-        list-style: none;
-        padding: 0;
-        margin-top: 20px;
-        flex-grow: 1; /* Pushes content to fill space */
-    }
-
-    .menu li {
-        padding: 15px 25px;
-        cursor: pointer;
-        transition: background 0.2s, padding-left 0.2s;
-        border-left: 4px solid transparent;
-        font-size: 0.95rem;
-    }
-
-    .menu li:hover {
-        background-color: rgba(255,255,255,0.1);
-        border-left: 4px solid #3498db; /* Blue accent on hover */
-        padding-left: 30px; /* Slide effect */
-    }
-
-    .menu li.active {
-        background-color: rgba(52, 152, 219, 0.2);
-        border-left: 4px solid #3498db;
-        color: #3498db;
-    }
-
-    .topbar {
-        background-color: white;
-        height: 100vh;
-        overflow-y: auto;
-        padding: 0 20px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-
-    .topbar-container {
-        background-color: slategray;
-    }
-
-.login{
-    min-height: 100vh;
+  background-color: var(--zcw-sidebar-bg);
+  color: #ecf0f1;
+  min-height: 100vh;
+  max-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 2px 0 8px rgba(0,0,0,0.25);
+  /* Fixed width handled by Bootstrap col-2 */
+  overflow: hidden;
 }
-
-.login-inside{
-    min-height: 100vh;
+ 
+/* ── Logo block ─────────────────────────────────────────────────────────── */
+.logo {
+  padding: 14px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 70px;          /* consistent height regardless of text wrap    */
 }
-
-.login-img{
-    height: 80px;
-    width: 80px;
-    object-fit: cover;
+ 
+.logo img {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: white;
+  flex-shrink: 0;
+  border: 2px solid rgba(255,255,255,0.15);
 }
-
-.left-panel{
-    background-color: rgb(54, 54, 224);
+ 
+.logo h1 {
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin: 0;
+  line-height: 1.25;
+  letter-spacing: 0.4px;
+  color: #ecf0f1;
+  white-space: normal;       /* allow wrap on smaller viewports              */
 }
-
-.right-panel{
-    background-color: white;
+ 
+/* ── Section label (e.g. "MAIN MENU") ──────────────────────────────────── */
+.menu-section-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.35);
+  padding: 14px 20px 4px;
+  margin: 0;
 }
+ 
+/* ── Nav list ───────────────────────────────────────────────────────────── */
+.menu {
+  list-style: none;
+  padding: 8px 0;
+  margin: 0;
+  flex-grow: 1;
+  overflow-y: auto;          /* scroll if content overflows                  */
+}
+ 
+/* Thin custom scrollbar inside sidebar */
+.menu::-webkit-scrollbar { width: 3px; }
+.menu::-webkit-scrollbar-track { background: transparent; }
+.menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+ 
+.menu li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 20px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.65);
+  border-left: 3px solid transparent;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, padding-left 0.18s ease;
+  user-select: none;
+}
+ 
+.menu li i {
+  font-size: 1rem;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+ 
+.menu li:hover {
+  background-color: var(--zcw-sidebar-hover);
+  color: #ffffff;
+  border-left-color: rgba(41,128,185,0.5);
+  padding-left: 24px;        /* slight indent on hover                       */
+}
+ 
+.menu li.active {
+  background-color: var(--zcw-sidebar-active);
+  border-left-color: var(--zcw-accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+ 
+/* ── Sidebar footer ─────────────────────────────────────────────────────── */
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: rgba(0,0,0,0.12);
+}
+ 
+.sidebar-footer .user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+ 
+.sidebar-footer .user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--zcw-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+ 
+.sidebar-footer .user-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #ecf0f1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+ 
+.sidebar-footer .user-role {
+  font-size: 0.65rem;
+  color: rgba(255,255,255,0.45);
+}
+ 
+.sidebar-footer .badge {
+  font-size: 0.6rem;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   TOP BAR / CONTENT AREA
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+/* The white scrollable content pane on the right (col-10) */
+.topbar {
+  background-color: #f0f2f5;
+  min-height: 100vh;
+  max-height: 100vh;
+  overflow-y: auto;
+}
+ 
+/* Sticky page-level top bar inside .topbar */
+.page-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: #ffffff;
+  border-bottom: 1px solid #dee2e6;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+ 
+.page-topbar .page-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1e2d3d;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+ 
+.page-topbar .page-title i {
+  color: var(--zcw-accent);
+}
+ 
+.page-topbar .topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+ 
+/* Breadcrumb inside page-topbar */
+.page-topbar .breadcrumb {
+  margin: 0;
+  font-size: 0.75rem;
+}
+ 
+/* ── Content padding wrapper used inside every page component ──────────── */
+.page-content {
+  padding: 20px;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   CARD UNIFORMITY
+   All card-header elements use the same neutral background. Individual
+   sections that need accent colour use a left-border stripe only.
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.card {
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+}
+ 
+.card-header {
+  background-color: var(--zcw-card-header-bg) !important;
+  border-bottom: 1px solid var(--zcw-card-header-border);
+  padding: 10px 16px;
+  font-size: 0.825rem;
+  font-weight: 600;
+  color: #1e2d3d;
+  /* Remove any text-white forced by old code — each header uses dark text */
+  color: inherit;
+}
+ 
+/* Override Bootstrap's coloured card-header variants with a uniform style */
+.card-header.bg-white,
+.card-header.bg-light,
+.card-header.bg-primary,
+.card-header.bg-success,
+.card-header.bg-danger,
+.card-header.bg-warning,
+.card-header.bg-dark,
+.card-header.bg-secondary,
+.card-header.bg-info {
+  background-color: var(--zcw-card-header-bg) !important;
+  color: #1e2d3d !important;
+}
+ 
+/* Accent stripe variant — add class 'card-header-accent-*' for a left border */
+.card-header-accent-blue   { border-left: 4px solid var(--zcw-header-accent-blue);   }
+.card-header-accent-green  { border-left: 4px solid var(--zcw-header-accent-green);  }
+.card-header-accent-red    { border-left: 4px solid var(--zcw-header-accent-red);    }
+.card-header-accent-orange { border-left: 4px solid var(--zcw-header-accent-orange); }
+.card-header-accent-dark   { border-left: 4px solid var(--zcw-header-accent-dark);   }
+ 
+/* Formal card — used for the RRB letterhead and official forms */
+.card-header-formal {
+  background-color: #1e2d3d !important;
+  color: #ffffff !important;
+  text-align: center;
+  padding: 14px 16px;
+}
+ 
+.card-header-formal h3,
+.card-header-formal h4,
+.card-header-formal h5,
+.card-header-formal .text-warning {
+  /* preserve the warning colour for ZRP form subtitles */
+}
+ 
+.card-body {
+  padding: 16px;
+}
+ 
+/* ── KPI / stat cards ───────────────────────────────────────────────────── */
+.kpi-card {
+  border-radius: 8px;
+  border: 1px solid #dee2e6;
+  background: #ffffff;
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+ 
+/* Top colour stripe */
+.kpi-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  border-radius: 8px 8px 0 0;
+}
+ 
+.kpi-card.kpi-primary::before   { background: var(--zcw-header-accent-blue);   }
+.kpi-card.kpi-success::before   { background: var(--zcw-header-accent-green);  }
+.kpi-card.kpi-danger::before    { background: var(--zcw-header-accent-red);    }
+.kpi-card.kpi-warning::before   { background: #b7770d;                         }
+ 
+.kpi-card .kpi-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #1e2d3d;
+}
+ 
+.kpi-card .kpi-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #6c757d;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-top: 4px;
+}
+ 
+.kpi-card .kpi-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   TYPOGRAPHY UNIFORMITY
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--zcw-font);
+  font-weight: 700;
+  color: #1e2d3d;
+}
+ 
+/* Page section headings */
+.section-heading {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #6c757d;
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #dee2e6;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   TABLE UNIFORMITY
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.table thead th {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #6c757d;
+  background-color: #f8f9fa;
+  border-bottom: 2px solid #dee2e6;
+  padding: 10px 12px;
+  white-space: nowrap;
+}
+ 
+.table tbody td {
+  font-size: 0.825rem;
+  padding: 9px 12px;
+  vertical-align: middle;
+  border-bottom: 1px solid #f0f2f5;
+  color: #3d4a5c;
+}
+ 
+.table tbody tr:hover td {
+  background-color: #f8f9fb;
+}
+ 
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   BADGE UNIFORMITY
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.badge {
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  border-radius: 4px;
+  padding: 0.3em 0.6em;
+}
+ 
+/* Status badges */
+.badge-investigating { background-color: rgba(253,197,60,0.15);  color: #856404;  border: 1px solid rgba(253,197,60,0.4);  }
+.badge-reported      { background-color: rgba(13,110,253,0.10);  color: #084298;  border: 1px solid rgba(13,110,253,0.25); }
+.badge-closed        { background-color: rgba(25,135,84,0.10);   color: #0a3622;  border: 1px solid rgba(25,135,84,0.25);  }
+.badge-open          { background-color: rgba(220,53,69,0.10);   color: #842029;  border: 1px solid rgba(220,53,69,0.25);  }
+.badge-admin-only    { background-color: #842029; color: #fff; }
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   FORM CONTROLS
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.form-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #3d4a5c;
+  margin-bottom: 4px;
+}
+ 
+.form-control, .form-select {
+  font-size: 0.85rem;
+  border-color: #ced4da;
+  border-radius: 6px;
+  padding: 0.45rem 0.75rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+ 
+.form-control:focus, .form-select:focus {
+  border-color: var(--zcw-accent);
+  box-shadow: 0 0 0 0.2rem rgba(41,128,185,0.18);
+}
+ 
+.form-text {
+  font-size: 0.72rem;
+  color: #6c757d;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   BUTTONS
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.btn {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  border-radius: 6px;
+  padding: 0.45rem 1rem;
+  transition: all 0.15s ease;
+}
+ 
+.btn-primary {
+  background-color: #1565C0;
+  border-color: #1565C0;
+}
+ 
+.btn-primary:hover {
+  background-color: #0d47a1;
+  border-color: #0d47a1;
+}
+ 
+.btn-outline-primary {
+  color: #1565C0;
+  border-color: #1565C0;
+}
+ 
+.btn-outline-primary:hover {
+  background-color: #1565C0;
+  color: #fff;
+}
+ 
+.btn-sm {
+  font-size: 0.75rem;
+  padding: 0.3rem 0.75rem;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ALERTS
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.alert {
+  font-size: 0.825rem;
+  border-radius: 6px;
+  border-left-width: 4px;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOGIN PAGE
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.login-page {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b3a6b 50%, #1e2d3d 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+ 
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  background: #ffffff;
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+  overflow: hidden;
+}
+ 
+.login-card-header {
+  background: linear-gradient(135deg, #1e2d3d 0%, #1565C0 100%);
+  padding: 28px 24px 20px;
+  text-align: center;
+}
+ 
+.login-card-header img {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,0.25);
+  object-fit: cover;
+  margin-bottom: 12px;
+}
+ 
+.login-card-header h4 {
+  color: #ffffff;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  margin: 0 0 4px;
+}
+ 
+.login-card-header p {
+  color: rgba(255,255,255,0.65);
+  font-size: 0.75rem;
+  margin: 0;
+  letter-spacing: 0.5px;
+}
+ 
+.login-card-body {
+  padding: 24px;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   CHART CONTAINERS
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.chart-container {
+  position: relative;
+  width: 100%;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   PROGRESS BARS
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.progress {
+  border-radius: 4px;
+  background-color: #e9ecef;
+}
+ 
+.progress-bar {
+  border-radius: 4px;
+  transition: width 0.6s ease;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCROLLBARS (main content area)
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+.topbar::-webkit-scrollbar { width: 5px; }
+.topbar::-webkit-scrollbar-track { background: #f0f2f5; }
+.topbar::-webkit-scrollbar-thumb { background: #ced4da; border-radius: 4px; }
+.topbar::-webkit-scrollbar-thumb:hover { background: #adb5bd; }
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ANIMATION UTILITIES
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+ 
+.spin {
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   RRB — Official Form Styling
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+/* Formal section dividers inside the RRB form */
+.rrb-section-divider {
+  border: none;
+  border-top: 2px solid #dee2e6;
+  margin: 20px 0;
+}
+ 
+/* ZRP official letterhead card override */
+.card.rrb-letterhead .card-header {
+  background-color: #1e2d3d !important;
+  color: #ffffff !important;
+  text-align: center;
+  padding: 16px;
+}
+ 
+.card.rrb-letterhead .card-header small,
+.card.rrb-letterhead .card-header .text-warning {
+  color: #f0b429 !important;
+}
+ 
+/* ═══════════════════════════════════════════════════════════════════════════
+   LEGACY OVERRIDES (keep backward-compat for existing Bootstrap classes
+   already used in components, while pulling them toward the unified look)
+   ═══════════════════════════════════════════════════════════════════════════ */
+ 
+/* Ensure all shadows are consistent */
+.shadow-sm {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08) !important;
+}
+ 
+/* Consistent rounded corners */
+.card, .rounded, .rounded-2 {
+  border-radius: 8px !important;
+}
+ 
+/* Remove leftover slategray topbar-container */
+.topbar-container {
+  background-color: transparent;
+}
+ 
+/* Spinner colour default */
+.spinner-border { color: #1565C0; }
+ 
+/* nav-pills inside Settings sidebar use primary colour */
+.nav-pills .nav-link.active, .nav-pills .show > .nav-link {
+  background-color: #1565C0;
+}
+ 
+/* Sticky top offset for inner sticky cards (RRB case summary) */
+.sticky-card-top {
+  position: sticky;
+  top: 70px;
+}
+ 
+/* ── End of stylesheet ──────────────────────────────────────────────────── */
