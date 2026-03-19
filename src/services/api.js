@@ -16,7 +16,7 @@ import axios from 'axios';
 
 // ─── Base URL ─────────────────────────────────────────────────────────────────
 // const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000/api';
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'https://d0fe-2605-59c1-3525-a310-6411-19be-d719-3b70.ngrok-free.app';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'https://d0fe-2605-59c1-3525-a310-6411-19be-d719-3b70.ngrok-free.app/api';
 
 // ─── Axios instance ───────────────────────────────────────────────────────────
 const api = axios.create({
