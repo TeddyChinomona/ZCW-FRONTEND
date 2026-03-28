@@ -189,7 +189,7 @@ const UnsupervisedResults = ({ result }) => {
 // ─── Main component ───────────────────────────────────────────────────────────
 function MLTraining() {
   const userRole = getCurrentUserRole();
-  const isAdmin  = userRole === 'admin';
+  const isAdmin  = userRole === 'admin' || 'officer';
 
   const [status,    setStatus]    = useState(STATUS.IDLE);
   const [result,    setResult]    = useState(null);
