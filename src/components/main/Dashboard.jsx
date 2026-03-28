@@ -17,12 +17,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet.heat';
 import {
   CategoryScale, Chart, LinearScale,
   LineController, LineElement, PointElement,
   BarController, BarElement,
   PieController, ArcElement,
-  DoughnutController, Title, Tooltip, Legend,
+  DoughnutController, Title, Tooltip, Legend, Filler
 } from 'chart.js';
 import {
   getDashboardSummary,
@@ -38,7 +39,7 @@ Chart.register(
   LineController, LineElement, PointElement,
   BarController, BarElement,
   PieController, ArcElement, DoughnutController,
-  Title, Tooltip, Legend,
+  Title, Tooltip, Legend, Filler
 );
 
 /* ── KPI card ────────────────────────────────────────────────────────────── */
@@ -101,67 +102,84 @@ function Dashboard() {
    *  1. Try window.L.heatLayer (leaflet.heat plugin loaded via CDN in index.html)
    *  2. Fall back to CircleMarker pins (always available via leaflet package)
    */
-  const renderHeatmapPoints = useCallback((map, rawData) => {
-    if (!map || !rawData) return;
+ const renderHeatmapPoints = useCallback((map, rawData) => {
+  if (!map || !rawData) return;
 
-    /* Clear previous heat/marker layer */
-    if (heatLayerGroup.current) {
-      heatLayerGroup.current.clearLayers();
-    } else {
-      heatLayerGroup.current = L.layerGroup().addTo(map);
+  /* 1. Clear previous layer and zoom events directly from the map */
+  if (heatLayerGroup.current) {
+    map.removeLayer(heatLayerGroup.current);
+    heatLayerGroup.current = null;
+  }
+  
+  // Clean up any old zoom listeners to prevent memory leaks
+  if (map._heatmapZoomHandler) {
+    map.off('zoomend', map._heatmapZoomHandler);
+  }
+
+  /* 2. Normalise input */
+  let points = [];
+  if (Array.isArray(rawData)) {
+    points = rawData.map(p =>
+      Array.isArray(p)
+        ? { lat: p[0], lng: p[1], intensity: p[2] ?? 0.5 }
+        : p
+    );
+  } else if (rawData?.points) {
+    points = rawData.points;
+  }
+
+  if (!points.length) return;
+
+  /* 3. Fit map to point bounds FIRST */
+  const latLngs = points.map(p => [p.lat, p.lng]);
+  if (latLngs.length) {
+    map.fitBounds(latLngs, { padding: [30, 30], maxZoom: 14 });
+  }
+
+  /* Helper: Calculate radius based on current zoom level */
+  const getDynamicRadius = (zoom) => {
+    const baseRadius = 20; // The radius size you want at the baseZoom
+    const baseZoom = 14;   // The zoom level where baseRadius looks best
+    
+    // Scale exponentially. Min radius: 5px, Max radius: 100px
+    return Math.max(5, Math.min(100, baseRadius * Math.pow(2, zoom - baseZoom)));
+  };
+
+  /* 4. Render Heatmap Directly to Map */
+  if (L.heatLayer) {
+    try {
+      const heatPoints = points.map(p => [p.lat, p.lng, p.intensity ?? 1]);
+      
+      // Bypass LayerGroup and add directly to the map
+      const heatLayer = L.heatLayer(heatPoints, { 
+        radius: getDynamicRadius(map.getZoom()), // Set initial scaled radius
+        blur: 15, 
+        maxZoom: 17 
+      }).addTo(map);
+      
+      // Store in ref for the next cleanup cycle
+      heatLayerGroup.current = heatLayer;
+
+      /* 5. Dynamic Scaling: Update radius when user zooms */
+      const handleZoom = () => {
+        if (heatLayerGroup.current) {
+          const currentZoom = map.getZoom();
+          heatLayerGroup.current.setOptions({
+            radius: getDynamicRadius(currentZoom)
+          });
+        }
+      };
+
+      // Attach the listener and store a reference so we can remove it later
+      map.on('zoomend', handleZoom);
+      map._heatmapZoomHandler = handleZoom;
+
+    } catch (error) {
+      console.error("HeatLayer failed:", error);
+      // Execute your fallback here if needed
     }
-
-    /* Normalise input to array of {lat, lng, intensity} objects */
-    let points = [];
-    if (Array.isArray(rawData)) {
-      /* Old backend shape: [[lat, lng, intensity], ...] */
-      points = rawData.map(p =>
-        Array.isArray(p)
-          ? { lat: p[0], lng: p[1], intensity: p[2] ?? 0.5 }
-          : p
-      );
-    } else if (rawData?.points) {
-      /* Shape: { points: [{lat, lng, intensity}] } */
-      points = rawData.points;
-    }
-
-    if (!points.length) return;
-
-    /* Attempt leaflet.heat plugin first (richer visual) */
-    if (window.L?.heatLayer) {
-      try {
-        const heatPoints = points.map(p => [p.lat, p.lng, p.intensity ?? 1]);
-        const layer = window.L.heatLayer(heatPoints, { radius: 20, blur: 15, maxZoom: 17 });
-        heatLayerGroup.current.addLayer(layer);
-        return;
-      } catch {
-        /* Plugin call failed; fall through to CircleMarker fallback */
-      }
-    }
-
-    /* Fallback: CircleMarker with opacity proportional to intensity */
-    points.forEach(({ lat, lng, intensity = 0.5 }) => {
-      /* Map intensity (0–1) to a colour from green → yellow → red */
-      const r = Math.round(intensity * 255);
-      const g = Math.round((1 - intensity) * 200);
-      const color = `rgb(${r},${g},20)`;
-
-      const marker = L.circleMarker([lat, lng], {
-        radius:      6,
-        fillColor:   color,
-        color:       'transparent',
-        fillOpacity: 0.55 + intensity * 0.35,  // range: 0.55–0.90
-        weight:      0,
-      });
-      heatLayerGroup.current.addLayer(marker);
-    });
-
-    /* Fit map to point bounds */
-    const latLngs = points.map(p => [p.lat, p.lng]);
-    if (latLngs.length) {
-      map.fitBounds(latLngs, { padding: [30, 30], maxZoom: 14 });
-    }
-  }, []);
+  }
+}, []);
 
   /* ── Build / rebuild all charts from fresh data ─────────────────────── */
   const buildCharts = useCallback(async () => {
