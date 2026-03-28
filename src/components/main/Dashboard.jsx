@@ -139,7 +139,7 @@ function Dashboard() {
   /* Helper: Calculate radius based on current zoom level */
   const getDynamicRadius = (zoom) => {
     const baseRadius = 20; // The radius size you want at the baseZoom
-    const baseZoom = 14;   // The zoom level where baseRadius looks best
+    const baseZoom = 17;   // The zoom level where baseRadius looks best
     
     // Scale exponentially. Min radius: 5px, Max radius: 100px
     return Math.max(5, Math.min(100, baseRadius * Math.pow(2, zoom - baseZoom)));
