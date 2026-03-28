@@ -433,7 +433,7 @@ function Dashboard() {
           </div>
           <div className="card-body p-0">
             {/* The div must always be present so Leaflet can attach to it */}
-            <div ref={mapRef} style={{ height: 360, width: '100%', borderRadius: '0 0 8px 8px' }} />
+            <div ref={mapRef} style={{ height: 420, width: '100%', borderRadius: '0 0 8px 8px' }} />
           </div>
         </div>
 

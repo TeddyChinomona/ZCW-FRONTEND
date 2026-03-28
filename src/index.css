@@ -60,8 +60,7 @@ html, body, #root {
  
 body {
   /* Retain logo background only on login; the app shell overrides below */
-  background: linear-gradient(rgba(0,0,0,0.82), rgba(0,0,0,0.82)),
-              url('/logo.jpg') center/cover no-repeat;
+  background: linear-gradient(rgba(0,0,0,0.82), rgba(0,0,0,0.82)),url('/logo.jpg') center/cover no-repeat;
 }
  
 /* The app shell (Home) overrides the body background so the dashboard
@@ -709,4 +708,3 @@ h1, h2, h3, h4, h5, h6 {
   top: 70px;
 }
  
-/* ── End of stylesheet ──────────────────────────────────────────────────── */
