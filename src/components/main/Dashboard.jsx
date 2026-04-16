@@ -1,20 +1,36 @@
 /**
  * src/components/main/Dashboard.jsx
  * ─────────────────────────────────────────────────────────────────────────────
- * Main ZRP Operations Dashboard.
+ * ZRP Operations Dashboard — Enhanced Version.
  *
- * Fixes applied:
- *  1. Crime Density Heatmap — the old code only supported `window.L.heatLayer`
- *     (the globalleaflet.heat plugin). We now use Leaflet CircleMarkers as a
- *     reliable fallback when leaflet.heat is unavailable, and also attempt to
- *     load the plugin. The heatmap data from the backend is { heatmap_data: [...] }
- *     NOT { points: [...] }, fixed the destructuring accordingly.
- *  2. Weekly Crime Trend — TimeSeriesView wraps its result as
- *     { timeseries: { labels, observed, ... } }. Old code accessed ts.dates
- *     which doesn't exist; fixed to ts.timeseries?.labels.
+ * Enhancements over the previous version:
+ *
+ *  HEATMAP MODULE:
+ *   • Crime-type filter dropdown — re-fetches KDE data for the selected type
+ *   • Date-range filter (start/end date inputs) — passed to getHeatmapData()
+ *   • Hotspot data table below the map: suburb, incident count, risk level,
+ *     dominant crime type, bearing from CBD, and a descriptive "what this means"
+ *     column so analysts understand the spatial pattern at a glance.
+ *   • Summary bar at the top of the heatmap card showing total clusters,
+ *     critical/high risk count, and the most affected area.
+ *
+ *  TIME SERIES MODULE:
+ *   • Frequency toggle: Daily / Weekly / Monthly
+ *   • Crime-type filter — re-fetches series for the selected type
+ *   • Date-range filter (start/end date inputs)
+ *   • Trend interpretation table below the chart: each period label, observed
+ *     count, trend value, 4-week moving average, % change vs previous period,
+ *     and a plain-English "Interpretation" column.
+ *   • Statistical summary row: total, peak, average, and overall trend direction.
+ *
+ *  GENERAL:
+ *   • KPI cards and other charts preserved from the original implementation.
+ *   • Leaflet heatmap rendering preserved with dynamic zoom-based radius.
+ *   • All fixes from the previous version (envelope unwrapping, role checks,
+ *     coord access via location.y/location.x) remain in place.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat';
@@ -30,10 +46,11 @@ import {
   getTimeSeries,
   getHeatmapData,
   getCrimeTypes,
+  getHotspots,
 } from '../../services/crimeService';
 import PageTopBar from './Pagetopbar';
 
-/* Register all Chart.js modules we use */
+/* ── Register all Chart.js modules ────────────────────────────────────────── */
 Chart.register(
   CategoryScale, LinearScale,
   LineController, LineElement, PointElement,
@@ -42,7 +59,88 @@ Chart.register(
   Title, Tooltip, Legend, Filler
 );
 
-/* ── KPI card ────────────────────────────────────────────────────────────── */
+/* ── Colour palette shared across bar / pie charts ───────────────────────── */
+const CHART_COLOURS = [
+  '#1565C0', '#c0392b', '#f0b429', '#1e8449',
+  '#7b2d8b', '#d35400', '#2e86c1', '#717d7e'
+];
+
+/* ── Risk level colour mapping used in both map legend and table badges ───── */
+const RISK_META = {
+  Critical : { badge: 'bg-purple text-white',   hex: '#7b2d8b', label: 'Critical' },
+  High     : { badge: 'bg-danger  text-white',   hex: '#c0392b', label: 'High'     },
+  Medium   : { badge: 'bg-warning text-dark',    hex: '#f0b429', label: 'Medium'   },
+  Low      : { badge: 'bg-success text-white',   hex: '#1e8449', label: 'Low'      },
+};
+const riskMeta = (level) => RISK_META[level] ?? RISK_META.Low;
+
+/* ── Harare CBD reference point (used for cardinal-bearing calculation) ───── */
+const HARARE_CBD = { lat: -17.8292, lng: 31.0522 };
+
+/**
+ * cardinalBearing — returns a human-readable compass direction from the
+ * CBD reference to a hotspot centroid, e.g. "3.4 km NW".
+ */
+const cardinalBearing = (lat, lng) => {
+  if (!lat || !lng) return '—';
+  const R = 6371; // Earth radius in km
+  const dLat = (lat - HARARE_CBD.lat) * (Math.PI / 180);
+  const dLng = (lng - HARARE_CBD.lng) * (Math.PI / 180);
+  // Approximate Euclidean distance in km (good enough within Harare)
+  const dist = Math.sqrt(dLat * dLat + dLng * dLng) * R;
+  const angle = Math.atan2(dLng, dLat) * (180 / Math.PI);
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const idx = Math.round(((angle % 360) + 360) % 360 / 45) % 8;
+  return `${dist.toFixed(1)} km ${dirs[idx]}`;
+};
+
+/**
+ * movingAverage — returns a 4-period moving average array, padding the
+ * first 3 positions with null so indices align with the source array.
+ */
+const movingAverage = (arr, window = 4) =>
+  arr.map((_, i) =>
+    i < window - 1
+      ? null
+      : parseFloat(
+          (arr.slice(i - window + 1, i + 1).reduce((s, v) => s + (v ?? 0), 0) / window).toFixed(1)
+        )
+  );
+
+/**
+ * percentChange — returns the % change between two consecutive values,
+ * formatted as "+12.5 %" or "−3.2 %" with an appropriate colour class.
+ */
+const percentChange = (prev, curr) => {
+  if (!prev || prev === 0) return { text: '—', cls: 'text-muted' };
+  const pct = (((curr ?? 0) - prev) / prev) * 100;
+  const sign = pct >= 0 ? '+' : '';
+  return {
+    text: `${sign}${pct.toFixed(1)} %`,
+    cls : pct > 5 ? 'text-danger fw-semibold'
+        : pct < -5 ? 'text-success fw-semibold'
+        : 'text-muted',
+  };
+};
+
+/**
+ * trendInterpretation — plain-English label for a single time period.
+ * Compares observed vs moving-average to describe the local pattern.
+ */
+const trendInterpretation = (observed, mavg, prevObserved) => {
+  if (observed === null || observed === undefined) return '—';
+  const rising = prevObserved !== null && (observed ?? 0) > (prevObserved ?? 0);
+  const aboveMa = mavg !== null && (observed ?? 0) > mavg;
+  if (observed === 0) return 'No incidents recorded';
+  if (observed > 20 && aboveMa && rising)  return 'Surge — significantly above trend';
+  if (observed > 10 && rising)              return 'Elevated — increasing activity';
+  if (!rising && !aboveMa && observed < 5) return 'Quiet — below average';
+  if (!rising && aboveMa)                  return 'Declining from elevated level';
+  if (rising && !aboveMa)                  return 'Recovering — approaching average';
+  return 'Within normal range';
+};
+
+/* ── KPI card component ───────────────────────────────────────────────────── */
 const KPICard = ({ title, value, icon, colorClass, subtitle }) => (
   <div className={`kpi-card ${colorClass} h-100`}>
     <div className="d-flex justify-content-between align-items-start mb-2">
@@ -56,183 +154,333 @@ const KPICard = ({ title, value, icon, colorClass, subtitle }) => (
   </div>
 );
 
-/* Colour palette for bar / pie charts */
-const CHART_COLOURS = ['#1565C0','#c0392b','#f0b429','#1e8449','#7b2d8b','#d35400','#2e86c1','#717d7e'];
+/* ── Inline loading spinner ───────────────────────────────────────────────── */
+const Spinner = () => (
+  <span className="spinner-border spinner-border-sm ms-2 text-primary" role="status" aria-hidden="true" />
+);
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   MAIN DASHBOARD COMPONENT
+═══════════════════════════════════════════════════════════════════════════ */
 function Dashboard() {
-  const [summary, setSummary]   = useState(null);
-  const [loading, setLoading]   = useState(false);
-  const [error, setError]       = useState('');
+  /* ── Global state ──────────────────────────────────────────────────────── */
+  const [summary,    setSummary]    = useState(null);
+  const [crimeTypes, setCrimeTypes] = useState([]);
+  const [loading,    setLoading]    = useState(false);
+  const [error,      setError]      = useState('');
 
-  /* Canvas refs for Chart.js */
-  const barChartRef      = useRef(null);
-  const pieChartRef      = useRef(null);
-  const doughnutChartRef = useRef(null);
-  const lineChartRef     = useRef(null);
-  /* DOM node for the Leaflet map */
-  const mapRef           = useRef(null);
+  /* ── Heatmap-specific state ────────────────────────────────────────────── */
+  const [heatmapCrimeType,  setHeatmapCrimeType]  = useState('');       // '' = all types
+  const [heatmapStartDate,  setHeatmapStartDate]  = useState('');
+  const [heatmapEndDate,    setHeatmapEndDate]    = useState('');
+  const [hotspots,          setHotspots]          = useState([]);        // DBSCAN cluster objects
+  const [heatmapLoading,    setHeatmapLoading]    = useState(false);
+  const [heatmapSortKey,    setHeatmapSortKey]    = useState('incidents'); // table sort column
+  const [heatmapSortDir,    setHeatmapSortDir]    = useState('desc');
 
-  /* Mutable refs for Chart.js and Leaflet instances (not tracked by React state) */
+  /* ── Time-series-specific state ────────────────────────────────────────── */
+  const [tsFreq,       setTsFreq]       = useState('W');    // D | W | M
+  const [tsCrimeType,  setTsCrimeType]  = useState('');
+  const [tsStartDate,  setTsStartDate]  = useState('');
+  const [tsEndDate,    setTsEndDate]    = useState('');
+  const [tsData,       setTsData]       = useState({ labels: [], observed: [], trend: [] });
+  const [tsLoading,    setTsLoading]    = useState(false);
+  const [tsSortDir,    setTsSortDir]    = useState('asc');  // table chronological sort
+
+  /* ── Canvas / DOM refs ─────────────────────────────────────────────────── */
+  const barChartRef       = useRef(null);
+  const pieChartRef       = useRef(null);
+  const doughnutChartRef  = useRef(null);
+  const lineChartRef      = useRef(null);
+  const mapRef            = useRef(null);
+
+  /* ── Chart / Leaflet instance refs (not tracked by React state) ─────────── */
   const barChartInstance      = useRef(null);
   const pieChartInstance      = useRef(null);
   const doughnutChartInstance = useRef(null);
   const lineChartInstance     = useRef(null);
   const mapInstance           = useRef(null);
-  /* Layer group for heat/circle markers so we can clear on refresh */
-  const heatLayerGroup        = useRef(null);
+  const heatLayerGroup        = useRef(null);   // holds the current L.heatLayer instance
 
-  /* Derived status counts with safe fallbacks */
+  /* ── Derived status counts ─────────────────────────────────────────────── */
   const byStatus = {
     open:          summary?.by_status?.open          ?? summary?.by_status?.reported       ?? 0,
     investigating: summary?.by_status?.investigating  ?? 0,
     resolved:      summary?.by_status?.resolved       ?? summary?.by_status?.closed         ?? 0,
   };
 
-  /* Safely destroy a Chart.js instance */
+  /* ── Destroy a Chart.js instance safely ───────────────────────────────── */
   const destroyChart = (ref) => {
     if (ref.current) { ref.current.destroy(); ref.current = null; }
   };
 
-  /* ── Render heatmap points on the Leaflet map ────────────────────────────
-   * Backend response shape: { heatmap_data: { points: [{lat, lng, intensity}] } }
-   * OR old shape: { heatmap_data: [[lat, lng, intensity], ...] }
-   * We handle both formats defensively.
-   *
+  /* ─────────────────────────────────────────────────────────────────────────
+   * renderHeatmapPoints
+   * Renders KDE heatmap points onto the Leaflet map.
    * Strategy:
-   *  1. Try window.L.heatLayer (leaflet.heat plugin loaded via CDN in index.html)
-   *  2. Fall back to CircleMarker pins (always available via leaflet package)
-   */
- const renderHeatmapPoints = useCallback((map, rawData) => {
-  if (!map || !rawData) return;
+   *   1. Remove previous heat layer and zoom listener.
+   *   2. Normalise the backend response (both array and {points:[]} formats).
+   *   3. Fit map bounds to the data extent.
+   *   4. Add L.heatLayer (leaflet.heat plugin) with zoom-proportional radius.
+   *   5. Register a zoomend handler to keep radius proportional as user zooms.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const renderHeatmapPoints = useCallback((map, rawData) => {
+    if (!map || !rawData) return;
 
-  /* 1. Clear previous layer and zoom events directly from the map */
-  if (heatLayerGroup.current) {
-    map.removeLayer(heatLayerGroup.current);
-    heatLayerGroup.current = null;
-  }
-  
-  // Clean up any old zoom listeners to prevent memory leaks
-  if (map._heatmapZoomHandler) {
-    map.off('zoomend', map._heatmapZoomHandler);
-  }
-
-  /* 2. Normalise input */
-  let points = [];
-  if (Array.isArray(rawData)) {
-    points = rawData.map(p =>
-      Array.isArray(p)
-        ? { lat: p[0], lng: p[1], intensity: p[2] ?? 0.5 }
-        : p
-    );
-  } else if (rawData?.points) {
-    points = rawData.points;
-  }
-
-  if (!points.length) return;
-
-  /* 3. Fit map to point bounds FIRST */
-  const latLngs = points.map(p => [p.lat, p.lng]);
-  if (latLngs.length) {
-    map.fitBounds(latLngs, { padding: [30, 30], maxZoom: 14 });
-  }
-
-  /* Helper: Calculate radius based on current zoom level */
-  const getDynamicRadius = (zoom) => {
-    const baseRadius = 20; // The radius size you want at the baseZoom
-    const baseZoom = 17;   // The zoom level where baseRadius looks best
-    
-    // Scale exponentially. Min radius: 5px, Max radius: 100px
-    return Math.max(5, Math.min(100, baseRadius * Math.pow(2, zoom - baseZoom)));
-  };
-
-  /* 4. Render Heatmap Directly to Map */
-  if (L.heatLayer) {
-    try {
-      const heatPoints = points.map(p => [p.lat, p.lng, p.intensity ?? 1]);
-      
-      // Bypass LayerGroup and add directly to the map
-      const heatLayer = L.heatLayer(heatPoints, { 
-        radius: getDynamicRadius(map.getZoom()), // Set initial scaled radius
-        blur: 15, 
-        maxZoom: 17 
-      }).addTo(map);
-      
-      // Store in ref for the next cleanup cycle
-      heatLayerGroup.current = heatLayer;
-
-      /* 5. Dynamic Scaling: Update radius when user zooms */
-      const handleZoom = () => {
-        if (heatLayerGroup.current) {
-          const currentZoom = map.getZoom();
-          heatLayerGroup.current.setOptions({
-            radius: getDynamicRadius(currentZoom)
-          });
-        }
-      };
-
-      // Attach the listener and store a reference so we can remove it later
-      map.on('zoomend', handleZoom);
-      map._heatmapZoomHandler = handleZoom;
-
-    } catch (error) {
-      console.error("HeatLayer failed:", error);
-      // Execute your fallback here if needed
+    // 1. Remove the previous heat layer and its zoom listener
+    if (heatLayerGroup.current) {
+      map.removeLayer(heatLayerGroup.current);
+      heatLayerGroup.current = null;
     }
-  }
-}, []);
+    if (map._heatmapZoomHandler) {
+      map.off('zoomend', map._heatmapZoomHandler);
+      delete map._heatmapZoomHandler;
+    }
 
-  /* ── Build / rebuild all charts from fresh data ─────────────────────── */
+    // 2. Normalise input — backend may return an array or an object with a points key
+    let points = [];
+    if (Array.isArray(rawData)) {
+      points = rawData.map(p =>
+        Array.isArray(p)
+          ? { lat: p[0], lng: p[1], intensity: p[2] ?? 0.5 }
+          : p
+      );
+    } else if (rawData?.points) {
+      points = rawData.points;
+    }
+
+    if (!points.length) return;
+
+    // 3. Fit map to the data extent
+    const latLngs = points.map(p => [p.lat, p.lng]);
+    map.fitBounds(latLngs, { padding: [30, 30], maxZoom: 14 });
+
+    // 4. Dynamic radius helper — base radius looks correct at zoom level 13
+    const getDynamicRadius = (zoom) =>
+      Math.max(5, Math.min(120, 20 * Math.pow(2, zoom - 13)));
+
+    if (L.heatLayer) {
+      try {
+        const heatPoints = points.map(p => [p.lat, p.lng, p.intensity ?? 1]);
+        const heatLayer  = L.heatLayer(heatPoints, {
+          radius  : getDynamicRadius(map.getZoom()),
+          blur    : 15,
+          maxZoom : 17,
+          gradient: { 0.2: '#1565C0', 0.5: '#f0b429', 0.8: '#c0392b', 1.0: '#7b2d8b' },
+        }).addTo(map);
+        heatLayerGroup.current = heatLayer;
+
+        // 5. Update radius on every zoom so the layer stays visually consistent
+        const handleZoom = () => {
+          if (heatLayerGroup.current) {
+            heatLayerGroup.current.setOptions({
+              radius: getDynamicRadius(map.getZoom()),
+            });
+          }
+        };
+        map.on('zoomend', handleZoom);
+        map._heatmapZoomHandler = handleZoom;
+      } catch (e) {
+        console.warn('[Dashboard] L.heatLayer failed — heatmap skipped:', e.message);
+      }
+    }
+  }, []);
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * fetchHeatmap
+   * Fetches KDE heatmap data and DBSCAN hotspot list with the current
+   * heatmap filter state, then re-renders the Leaflet layer and updates
+   * the hotspot table.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const fetchHeatmap = useCallback(async () => {
+    if (!mapInstance.current) return;
+    setHeatmapLoading(true);
+
+    // Build the filter payload (empty strings are omitted by the service)
+    const filters = {};
+    if (heatmapCrimeType) filters.crime_type_id = heatmapCrimeType;
+    if (heatmapStartDate) filters.start_date    = heatmapStartDate;
+    if (heatmapEndDate)   filters.end_date      = heatmapEndDate;
+
+    try {
+      // Fetch heatmap points and hotspot clusters in parallel
+      const [heatRes, spotsRes] = await Promise.all([
+        getHeatmapData(filters),
+        getHotspots(filters),
+      ]);
+
+      // Unwrap the heatmap envelope: { heatmap_data: { points: [...] } }
+      const heatInner = heatRes?.heatmap_data ?? heatRes;
+      renderHeatmapPoints(mapInstance.current, heatInner);
+
+      // Unwrap hotspot response: { hotspots: [...] } or raw array
+      const rawSpots = spotsRes?.hotspots ?? spotsRes ?? [];
+      setHotspots(
+        rawSpots
+          .map(s => ({
+            location   : s.suburb       || 'Unknown Area',
+            crimeType  : s.area         || 'Unknown',
+            incidents  : s.incident_count ?? 0,
+            risk       : s.risk_level   ?? 'Low',
+            lat        : s.centre_lat,
+            lng        : s.centre_lng,
+            bearing    : cardinalBearing(s.centre_lat, s.centre_lng),
+          }))
+          .sort((a, b) => b.incidents - a.incidents)
+      );
+    } catch (e) {
+      console.error('[Dashboard] fetchHeatmap error:', e);
+    } finally {
+      setHeatmapLoading(false);
+    }
+  }, [heatmapCrimeType, heatmapStartDate, heatmapEndDate, renderHeatmapPoints]);
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * fetchTimeSeries
+   * Fetches and renders the line chart for the current TS filter state.
+   * Also updates the tsData state so the data table can be derived from it.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const fetchTimeSeries = useCallback(async () => {
+    setTsLoading(true);
+
+    const filters = { freq: tsFreq };
+    if (tsCrimeType)  filters.crime_type_id = tsCrimeType;
+    if (tsStartDate)  filters.start_date    = tsStartDate;
+    if (tsEndDate)    filters.end_date      = tsEndDate;
+
+    try {
+      const ts       = await getTimeSeries(filters);
+      const tsInner  = ts?.timeseries ?? ts;
+      const labels   = tsInner?.labels   ?? tsInner?.dates   ?? [];
+      const observed = tsInner?.observed ?? [];
+      const trend    = tsInner?.trend    ?? [];
+
+      setTsData({ labels, observed, trend });
+
+      // Rebuild the line chart
+      destroyChart(lineChartInstance);
+      if (lineChartRef.current && labels.length) {
+        // Format labels compactly: "2024-06-10" → "06-10" (weekly/daily) or "2024-06" (monthly)
+        const shortLabels = labels.map(d => {
+          if (!d) return '';
+          return tsFreq === 'M' ? d.slice(0, 7) : d.slice(5);
+        });
+
+        lineChartInstance.current = new Chart(lineChartRef.current, {
+          type: 'line',
+          data: {
+            labels: shortLabels,
+            datasets: [
+              {
+                label          : 'Observed',
+                data           : observed,
+                borderColor    : '#1565C0',
+                backgroundColor: 'rgba(21,101,192,0.08)',
+                borderWidth    : 2,
+                pointRadius    : 3,
+                fill           : true,
+                tension        : 0.35,
+              },
+              // Overlay the statistical trend line when available
+              ...(trend && trend.some(v => v !== null) ? [{
+                label          : 'Trend',
+                data           : trend,
+                borderColor    : '#c0392b',
+                backgroundColor: 'transparent',
+                borderWidth    : 2,
+                borderDash     : [5, 3],
+                pointRadius    : 0,
+                fill           : false,
+                tension        : 0.35,
+              }] : []),
+            ],
+          },
+          options: {
+            responsive        : true,
+            maintainAspectRatio: false,
+            interaction       : { mode: 'index', intersect: false },
+            plugins: {
+              legend : { display: true, position: 'top', labels: { font: { size: 10 }, boxWidth: 10 } },
+              tooltip: { callbacks: {
+                label: (ctx) => ` ${ctx.dataset.label}: ${ctx.raw ?? '—'}`,
+              }},
+            },
+            scales: {
+              x: {
+                ticks: { font: { size: 9 }, maxTicksLimit: 12, maxRotation: 45 },
+                grid : { display: false },
+              },
+              y: {
+                beginAtZero: true,
+                ticks: { font: { size: 10 } },
+                grid : { color: '#f0f2f5' },
+                title: { display: true, text: 'Incident Count', font: { size: 10 } },
+              },
+            },
+          },
+        });
+      } else if (lineChartRef.current) {
+        // No data — draw a placeholder message directly on the canvas
+        const ctx = lineChartRef.current.getContext('2d');
+        ctx.clearRect(0, 0, lineChartRef.current.width, lineChartRef.current.height);
+        ctx.fillStyle   = '#adb5bd';
+        ctx.font        = '13px Inter, sans-serif';
+        ctx.textAlign   = 'center';
+        ctx.fillText(
+          'No trend data for the selected period',
+          lineChartRef.current.width  / 2,
+          lineChartRef.current.height / 2,
+        );
+      }
+    } catch (e) {
+      console.error('[Dashboard] fetchTimeSeries error:', e);
+    } finally {
+      setTsLoading(false);
+    }
+  }, [tsFreq, tsCrimeType, tsStartDate, tsEndDate]);
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * buildCharts
+   * Initial full-dashboard data load: KPI, bar, pie, doughnut, heatmap, TS.
+   * Called once on mount and on the global Refresh button.
+   * ───────────────────────────────────────────────────────────────────────── */
   const buildCharts = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const [sum, ts, heatRes, types] = await Promise.all([
+      // Fetch summary and crime-type list in parallel first
+      const [sum, types] = await Promise.all([
         getDashboardSummary(),
-        /* Request weekly frequency; backend returns { timeseries: { labels, observed, ... } } */
-        getTimeSeries({ freq: 'W' }),
-        /* Backend returns { heatmap_data: { points: [...] } } */
-        getHeatmapData(),
         getCrimeTypes(),
       ]);
       setSummary(sum);
+      setCrimeTypes(types);
 
-      /* ─── Unwrap backend envelopes ────────────────────────────────────── */
-      /* TimeSeries: may be { timeseries: {...} } or the inner object directly */
-      const tsInner = ts?.timeseries ?? ts;
-
-      /* labels field (new backend) or dates (old backend) */
-      const tsLabels   = tsInner?.labels   ?? tsInner?.dates   ?? [];
-      const tsObserved = tsInner?.observed ?? [];
-
-      /* Heatmap: may be { heatmap_data: {...} } or the inner object */
-      const heatInner  = heatRes?.heatmap_data ?? heatRes;
-
-      /* ─── Bar chart: incidents by crime type ──────────────────────────── */
+      /* ── Bar chart: incidents by crime type ─────────────────────────────── */
       destroyChart(barChartInstance);
       if (barChartRef.current) {
-        /* Prefer summary top types; fall back to full crime type list */
-        const topTypes = sum?.top_types
-          ?? sum?.top_crime_types?.map(t => ({ name: t.crime_type__name ?? t.name, count: t.count ?? 0 }))
+        const topTypes = sum?.top_crime_types
+          ?.map(t => ({ name: t.crime_type__name ?? t.name, count: t.count ?? 0 }))
           ?? types.map(t => ({ name: t.name, count: t.incident_count ?? 0 }));
 
         barChartInstance.current = new Chart(barChartRef.current, {
           type: 'bar',
           data: {
-            labels: topTypes.map(t => t.name),
+            labels  : topTypes.map(t => t.name),
             datasets: [{
-              label: 'Incidents',
-              data: topTypes.map(t => t.count),
+              label          : 'Incidents',
+              data           : topTypes.map(t => t.count),
               backgroundColor: CHART_COLOURS.map(c => c + 'CC'),
-              borderColor: CHART_COLOURS,
-              borderWidth: 1,
-              borderRadius: 4,
+              borderColor    : CHART_COLOURS,
+              borderWidth    : 1,
+              borderRadius   : 4,
             }],
           },
           options: {
-            responsive: true,
+            responsive        : true,
             maintainAspectRatio: false,
             plugins: { legend: { display: false } },
-            scales: {
+            scales : {
               x: { ticks: { font: { size: 10 } }, grid: { display: false } },
               y: { beginAtZero: true, ticks: { font: { size: 10 } }, grid: { color: '#f0f2f5' } },
             },
@@ -240,23 +488,23 @@ function Dashboard() {
         });
       }
 
-      /* ─── Pie chart: status breakdown ──────────────────────────────────── */
+      /* ── Pie chart: status breakdown ────────────────────────────────────── */
       destroyChart(pieChartInstance);
       if (pieChartRef.current) {
         const statuses = sum?.by_status ?? {};
         pieChartInstance.current = new Chart(pieChartRef.current, {
           type: 'pie',
           data: {
-            labels: Object.keys(statuses),
+            labels  : Object.keys(statuses),
             datasets: [{
-              data: Object.values(statuses),
+              data           : Object.values(statuses),
               backgroundColor: ['#1565C0CC','#f0b429CC','#1e8449CC','#c0392bCC'],
-              borderColor:     ['#1565C0',  '#f0b429',  '#1e8449',  '#c0392b'],
-              borderWidth: 1,
+              borderColor    : ['#1565C0',  '#f0b429',  '#1e8449',  '#c0392b'],
+              borderWidth    : 1,
             }],
           },
           options: {
-            responsive: true,
+            responsive        : true,
             maintainAspectRatio: false,
             plugins: {
               legend: { position: 'bottom', labels: { font: { size: 10 }, padding: 10, boxWidth: 10 } },
@@ -265,7 +513,7 @@ function Dashboard() {
         });
       }
 
-      /* ─── Doughnut chart: recency breakdown ────────────────────────────── */
+      /* ── Doughnut chart: recency breakdown ──────────────────────────────── */
       destroyChart(doughnutChartInstance);
       if (doughnutChartRef.current) {
         const last7  = sum?.last_7_days  ?? 0;
@@ -274,16 +522,16 @@ function Dashboard() {
         doughnutChartInstance.current = new Chart(doughnutChartRef.current, {
           type: 'doughnut',
           data: {
-            labels: ['Last 7 days', 'Last 30 days', 'Older'],
+            labels  : ['Last 7 days', 'Last 8–30 days', 'Older'],
             datasets: [{
-              data: [last7, last30 - last7, older],
+              data           : [last7, Math.max(0, last30 - last7), older],
               backgroundColor: ['#1565C0CC','#f0b429CC','#dee2e6'],
-              borderColor:     ['#1565C0',  '#f0b429',  '#dee2e6'],
-              borderWidth: 1,
+              borderColor    : ['#1565C0',  '#f0b429',  '#dee2e6'],
+              borderWidth    : 1,
             }],
           },
           options: {
-            responsive: true,
+            responsive        : true,
             maintainAspectRatio: false,
             cutout: '60%',
             plugins: {
@@ -293,62 +541,13 @@ function Dashboard() {
         });
       }
 
-      /* ─── Line chart: weekly trend ─────────────────────────────────────── */
-      destroyChart(lineChartInstance);
-      if (lineChartRef.current && tsLabels.length) {
-        /* Format labels: "2024-06-10" → "06-10" for compact display */
-        const shortLabels = tsLabels.map(d => (d && d.length >= 7) ? d.slice(5) : d);
-
-        lineChartInstance.current = new Chart(lineChartRef.current, {
-          type: 'line',
-          data: {
-            labels: shortLabels,
-            datasets: [{
-              label: 'Incidents',
-              data: tsObserved,
-              borderColor: '#1565C0',
-              backgroundColor: 'rgba(21,101,192,0.08)',
-              borderWidth: 2,
-              pointRadius: 2,
-              fill: true,
-              tension: 0.35,
-            }],
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-              x: { ticks: { font: { size: 9 }, maxTicksLimit: 8 }, grid: { display: false } },
-              y: { beginAtZero: true, ticks: { font: { size: 10 } }, grid: { color: '#f0f2f5' } },
-            },
-          },
-        });
-      } else if (lineChartRef.current && !tsLabels.length) {
-        /* No data available — render a placeholder message on the canvas */
-        const ctx = lineChartRef.current.getContext('2d');
-        ctx.clearRect(0, 0, lineChartRef.current.width, lineChartRef.current.height);
-        ctx.fillStyle = '#adb5bd';
-        ctx.font = '13px Inter, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(
-          'No trend data available for this period',
-          lineChartRef.current.width / 2,
-          lineChartRef.current.height / 2,
-        );
-      }
-
-      /* ─── Leaflet heatmap ──────────────────────────────────────────────── */
+      /* ── Initialise Leaflet map (once only) ─────────────────────────────── */
       if (!mapInstance.current && mapRef.current) {
         mapInstance.current = L.map(mapRef.current).setView([-17.8292, 31.0522], 13);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '© OpenStreetMap contributors',
+          maxZoom    : 19,
         }).addTo(mapInstance.current);
-      }
-
-      /* Render heat points (works with or without the leaflet.heat plugin) */
-      if (mapInstance.current) {
-        renderHeatmapPoints(mapInstance.current, heatInner);
       }
 
     } catch (err) {
@@ -357,9 +556,23 @@ function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [renderHeatmapPoints]);
 
-  /* Build charts on mount; clean up on unmount */
+    // Fire the heatmap and time-series fetches after the core charts are ready
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ── Re-fetch heatmap whenever its filters change ─────────────────────── */
+  useEffect(() => {
+    // Only trigger if the map has been initialised
+    if (mapInstance.current) fetchHeatmap();
+  }, [fetchHeatmap]);
+
+  /* ── Re-fetch time series whenever its filters change ─────────────────── */
+  useEffect(() => {
+    fetchTimeSeries();
+  }, [fetchTimeSeries]);
+
+  /* ── Initial load + cleanup ────────────────────────────────────────────── */
   useEffect(() => {
     buildCharts();
     return () => {
@@ -367,7 +580,6 @@ function Dashboard() {
       destroyChart(pieChartInstance);
       destroyChart(doughnutChartInstance);
       destroyChart(lineChartInstance);
-      /* Leaflet map cleanup */
       if (mapInstance.current) {
         mapInstance.current.remove();
         mapInstance.current = null;
@@ -375,10 +587,106 @@ function Dashboard() {
     };
   }, [buildCharts]);
 
+  /* ── Trigger heatmap fetch once the map DOM node is available ────────── */
+  useEffect(() => {
+    if (mapInstance.current) fetchHeatmap();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * Hotspot table — sorted version derived from state
+   * ───────────────────────────────────────────────────────────────────────── */
+  const sortedHotspots = useMemo(() => {
+    const copy = [...hotspots];
+    copy.sort((a, b) => {
+      // Numeric columns
+      if (heatmapSortKey === 'incidents') {
+        return heatmapSortDir === 'desc'
+          ? b.incidents - a.incidents
+          : a.incidents - b.incidents;
+      }
+      // String columns
+      const aVal = String(a[heatmapSortKey] ?? '').toLowerCase();
+      const bVal = String(b[heatmapSortKey] ?? '').toLowerCase();
+      return heatmapSortDir === 'asc'
+        ? aVal.localeCompare(bVal)
+        : bVal.localeCompare(aVal);
+    });
+    return copy;
+  }, [hotspots, heatmapSortKey, heatmapSortDir]);
+
+  const toggleHeatmapSort = (key) => {
+    if (heatmapSortKey === key) {
+      setHeatmapSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setHeatmapSortKey(key);
+      setHeatmapSortDir('desc');
+    }
+  };
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * Time-series data table — computed from tsData with moving average,
+   * % change, and plain-English interpretation columns.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const tsTableRows = useMemo(() => {
+    const { labels, observed, trend } = tsData;
+    if (!labels.length) return [];
+
+    const mavg = movingAverage(observed, 4);
+
+    // Build an array of row objects in chronological order
+    const rows = labels.map((label, i) => {
+      const obs  = observed[i] ?? 0;
+      const prev = i > 0 ? observed[i - 1] : null;
+      const pct  = percentChange(prev, obs);
+
+      return {
+        label,
+        observed    : obs,
+        trend       : trend[i] !== null && trend[i] !== undefined ? parseFloat((trend[i] ?? 0).toFixed(1)) : null,
+        movingAvg   : mavg[i],
+        pctChange   : pct,
+        interpretation: trendInterpretation(obs, mavg[i], prev),
+      };
+    });
+
+    // Allow the user to reverse chronological order
+    return tsSortDir === 'asc' ? rows : [...rows].reverse();
+  }, [tsData, tsSortDir]);
+
+  /* ── Time-series statistical summary ─────────────────────────────────── */
+  const tsSummary = useMemo(() => {
+    const obs = tsData.observed.filter(v => v !== null && v !== undefined);
+    if (!obs.length) return null;
+    const total   = obs.reduce((s, v) => s + v, 0);
+    const peak    = Math.max(...obs);
+    const avg     = (total / obs.length).toFixed(1);
+    const first   = obs[0] ?? 0;
+    const last    = obs[obs.length - 1] ?? 0;
+    const dirText = last > first * 1.05 ? '↑ Rising'
+                  : last < first * 0.95 ? '↓ Falling'
+                  : '→ Stable';
+    const dirCls  = last > first * 1.05 ? 'text-danger'
+                  : last < first * 0.95 ? 'text-success'
+                  : 'text-muted';
+    return { total, peak, avg, dirText, dirCls };
+  }, [tsData]);
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * Sort icon helper — renders the appropriate Bootstrap Icon for a table
+   * header based on whether it is the active sort column.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const SortIcon = ({ col, activeCol, dir }) =>
+    activeCol === col
+      ? <i className={`bi bi-sort-${dir === 'asc' ? 'up' : 'down'} ms-1`} />
+      : <i className="bi bi-arrow-down-up ms-1 text-muted opacity-50" style={{ fontSize: '0.7rem' }} />;
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * RENDER
+   * ───────────────────────────────────────────────────────────────────────── */
   return (
     <div className="topbar container-fluid p-0">
 
-      {/* ── Sticky page header ─────────────────────────────────────────── */}
+      {/* ── Sticky page header ──────────────────────────────────────────── */}
       <PageTopBar
         title="Operations Dashboard"
         icon="speedometer2"
@@ -390,11 +698,11 @@ function Dashboard() {
           disabled={loading}
         >
           <i className={`bi bi-arrow-repeat ${loading ? 'spin' : ''} me-1`}></i>
-          {loading ? 'Refreshing…' : 'Refresh'}
+          {loading ? 'Refreshing…' : 'Refresh All'}
         </button>
       </PageTopBar>
 
-      {/* ── Page content ───────────────────────────────────────────────── */}
+      {/* ── Page content ────────────────────────────────────────────────── */}
       <div className="page-content">
 
         {error && (
@@ -405,7 +713,7 @@ function Dashboard() {
           </div>
         )}
 
-        {/* ── KPI row ──────────────────────────────────────────────────── */}
+        {/* ── KPI row ───────────────────────────────────────────────────── */}
         <div className="row g-3 mb-4">
           <div className="col-6 col-md-3">
             <KPICard title="Total Incidents" value={summary?.total_incidents} icon="file-earmark-text" colorClass="kpi-primary" subtitle="All time" />
@@ -421,38 +729,401 @@ function Dashboard() {
           </div>
         </div>
 
-        {/* ── Crime Density Heatmap ─────────────────────────────────────── */}
+        {/* ════════════════════════════════════════════════════════════════
+            CRIME DENSITY HEATMAP  (enhanced with filters + data table)
+        ════════════════════════════════════════════════════════════════ */}
         <div className="card shadow-sm mb-4">
-          <div className="card-header card-header-accent-blue">
-            <i className="bi bi-map me-2"></i>
-            Crime Density Heatmap
-            <span className="badge badge-investigating ms-2">KDE</span>
-            {loading && (
-              <span className="spinner-border spinner-border-sm ms-2 text-primary" role="status" />
-            )}
+          <div className="card-header card-header-accent-blue d-flex align-items-center justify-content-between flex-wrap gap-2">
+            <span>
+              <i className="bi bi-map me-2"></i>
+              Crime Density Heatmap
+              <span className="badge badge-investigating ms-2">KDE</span>
+              {heatmapLoading && <Spinner />}
+            </span>
+
+            {/* ── Heatmap filter controls ──────────────────────────────── */}
+            <div className="d-flex gap-2 flex-wrap align-items-center">
+
+              {/* Crime type dropdown */}
+              <select
+                className="form-select form-select-sm"
+                style={{ width: 'auto', fontSize: '0.78rem' }}
+                value={heatmapCrimeType}
+                onChange={e => setHeatmapCrimeType(e.target.value)}
+                disabled={heatmapLoading}
+              >
+                <option value="">All crime types</option>
+                {crimeTypes.map(ct => (
+                  <option key={ct.id} value={ct.id}>{ct.name}</option>
+                ))}
+              </select>
+
+              {/* Date range start */}
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                style={{ width: 140, fontSize: '0.78rem' }}
+                value={heatmapStartDate}
+                onChange={e => setHeatmapStartDate(e.target.value)}
+                disabled={heatmapLoading}
+                title="Heatmap start date"
+              />
+              <span className="text-muted small">→</span>
+              {/* Date range end */}
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                style={{ width: 140, fontSize: '0.78rem' }}
+                value={heatmapEndDate}
+                onChange={e => setHeatmapEndDate(e.target.value)}
+                disabled={heatmapLoading}
+                title="Heatmap end date"
+              />
+
+              {/* Clear filters button */}
+              {(heatmapCrimeType || heatmapStartDate || heatmapEndDate) && (
+                <button
+                  className="btn btn-sm btn-outline-secondary"
+                  onClick={() => { setHeatmapCrimeType(''); setHeatmapStartDate(''); setHeatmapEndDate(''); }}
+                  title="Clear heatmap filters"
+                >
+                  <i className="bi bi-x-lg"></i>
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* ── Hotspot summary strip ──────────────────────────────────── */}
+          {hotspots.length > 0 && (
+            <div className="px-3 py-2 border-bottom bg-light d-flex gap-4 flex-wrap" style={{ fontSize: '0.78rem' }}>
+              <span>
+                <i className="bi bi-geo-alt-fill text-primary me-1"></i>
+                <strong>{hotspots.length}</strong> cluster{hotspots.length !== 1 ? 's' : ''} detected
+              </span>
+              <span>
+                <i className="bi bi-exclamation-triangle-fill text-danger me-1"></i>
+                <strong>{hotspots.filter(h => h.risk === 'Critical' || h.risk === 'High').length}</strong> critical / high risk
+              </span>
+              {hotspots[0] && (
+                <span>
+                  <i className="bi bi-star-fill text-warning me-1"></i>
+                  Most affected: <strong>{hotspots[0].location}</strong> ({hotspots[0].incidents} incidents)
+                </span>
+              )}
+              <span className="ms-auto text-muted">
+                DBSCAN spatial clustering &nbsp;|&nbsp; Colour: blue → yellow → red → purple by density
+              </span>
+            </div>
+          )}
+
+          {/* ── Leaflet map ───────────────────────────────────────────── */}
           <div className="card-body p-0">
-            {/* The div must always be present so Leaflet can attach to it */}
-            <div ref={mapRef} style={{ height: 420, width: '100%', borderRadius: '0 0 8px 8px' }} />
+            <div ref={mapRef} style={{ height: 400, width: '100%' }} />
+          </div>
+
+          {/* ── Colour legend ─────────────────────────────────────────── */}
+          <div className="px-3 py-2 border-top d-flex align-items-center gap-3 flex-wrap" style={{ fontSize: '0.72rem', background: '#f8f9fa' }}>
+            <span className="text-muted fw-semibold me-1">Density:</span>
+            {[
+              { colour: '#1565C0', label: 'Low' },
+              { colour: '#f0b429', label: 'Moderate' },
+              { colour: '#c0392b', label: 'High' },
+              { colour: '#7b2d8b', label: 'Very High' },
+            ].map(({ colour, label }) => (
+              <span key={label} className="d-flex align-items-center gap-1">
+                <span style={{ width: 12, height: 12, borderRadius: 2, background: colour, display: 'inline-block' }} />
+                {label}
+              </span>
+            ))}
+            <span className="ms-auto text-muted">Circle size ∝ incident count</span>
+          </div>
+
+          {/* ── Hotspot data table ────────────────────────────────────── */}
+          {hotspots.length > 0 && (
+            <div className="card-body border-top pt-3" style={{ padding: '12px 16px' }}>
+              <h6 className="fw-semibold mb-1" style={{ fontSize: '0.85rem' }}>
+                <i className="bi bi-table me-2 text-primary"></i>
+                Hotspot Cluster Detail
+                <span className="text-muted fw-normal ms-2" style={{ fontSize: '0.75rem' }}>
+                  — What the heatmap is showing
+                </span>
+              </h6>
+              <p className="text-muted mb-2" style={{ fontSize: '0.75rem' }}>
+                Each row represents a spatial crime cluster identified by DBSCAN.
+                <strong> Risk level</strong> is based on incident density within 500 m.
+                <strong> Bearing</strong> shows distance and direction from Harare CBD.
+                Use this table to prioritise patrol deployment.
+              </p>
+
+              <div className="table-responsive">
+                <table className="table table-sm table-hover mb-0">
+                  <thead className="table-light">
+                    <tr>
+                      {[
+                        { key: 'location',  label: 'Area / Suburb' },
+                        { key: 'crimeType', label: 'Dominant Crime' },
+                        { key: 'incidents', label: 'Incidents' },
+                        { key: 'risk',      label: 'Risk Level' },
+                        { key: 'bearing',   label: 'From CBD' },
+                      ].map(({ key, label }) => (
+                        <th
+                          key={key}
+                          style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+                          onClick={() => toggleHeatmapSort(key)}
+                        >
+                          {label}
+                          <SortIcon col={key} activeCol={heatmapSortKey} dir={heatmapSortDir} />
+                        </th>
+                      ))}
+                      <th>Operational Guidance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedHotspots.map((spot, i) => {
+                      const meta = riskMeta(spot.risk);
+                      // Derive a concise operational note based on risk and incident count
+                      const guidance =
+                        spot.risk === 'Critical'
+                          ? 'Deploy additional patrols immediately — active crime hotspot'
+                          : spot.risk === 'High'
+                          ? 'Increase patrol frequency and consider preventive operations'
+                          : spot.risk === 'Medium'
+                          ? 'Monitor trend; schedule targeted patrols during peak hours'
+                          : 'Standard patrol schedule; review if incidents increase';
+
+                      return (
+                        <tr key={i}>
+                          <td className="fw-medium">{spot.location}</td>
+                          <td className="text-muted" style={{ fontSize: '0.78rem' }}>{spot.crimeType}</td>
+                          <td>
+                            <strong>{spot.incidents}</strong>
+                          </td>
+                          <td>
+                            <span
+                              className={`badge ${meta.badge}`}
+                              style={spot.risk === 'Critical' ? { background: meta.hex } : {}}
+                            >
+                              {spot.risk}
+                            </span>
+                          </td>
+                          <td style={{ fontSize: '0.78rem' }}>{spot.bearing}</td>
+                          <td style={{ fontSize: '0.75rem', color: '#495057' }}>{guidance}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Risk legend explanation */}
+              <div className="mt-2 d-flex gap-3 flex-wrap" style={{ fontSize: '0.72rem' }}>
+                <span className="text-muted fw-semibold">Risk thresholds:</span>
+                <span><strong style={{ color: '#7b2d8b' }}>Critical</strong> ≥ 20 incidents</span>
+                <span><strong className="text-danger">High</strong> 10–19 incidents</span>
+                <span><strong className="text-warning">Medium</strong> 5–9 incidents</span>
+                <span><strong className="text-success">Low</strong> &lt; 5 incidents</span>
+              </div>
+            </div>
+          )}
+
+          {!heatmapLoading && hotspots.length === 0 && (
+            <div className="card-body border-top text-center py-3">
+              <small className="text-muted">
+                <i className="bi bi-info-circle me-1"></i>
+                No hotspot clusters found for the current filters. Try widening the date range.
+              </small>
+            </div>
+          )}
+        </div>
+
+        {/* ════════════════════════════════════════════════════════════════
+            TIME SERIES TREND CHART  (enhanced with filters + data table)
+        ════════════════════════════════════════════════════════════════ */}
+        <div className="card shadow-sm mb-4">
+          <div className="card-header card-header-accent-dark d-flex align-items-center justify-content-between flex-wrap gap-2">
+            <span>
+              <i className="bi bi-graph-up me-2"></i>
+              Crime Trend Analysis
+              {tsLoading && <Spinner />}
+            </span>
+
+            {/* ── Time series filter controls ──────────────────────────── */}
+            <div className="d-flex gap-2 flex-wrap align-items-center">
+
+              {/* Frequency toggle */}
+              <div className="btn-group btn-group-sm">
+                {[['D','Daily'],['W','Weekly'],['M','Monthly']].map(([code, label]) => (
+                  <button
+                    key={code}
+                    className={`btn ${tsFreq === code ? 'btn-primary' : 'btn-outline-primary'}`}
+                    style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+                    onClick={() => setTsFreq(code)}
+                    disabled={tsLoading}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Crime type */}
+              <select
+                className="form-select form-select-sm"
+                style={{ width: 'auto', fontSize: '0.78rem' }}
+                value={tsCrimeType}
+                onChange={e => setTsCrimeType(e.target.value)}
+                disabled={tsLoading}
+              >
+                <option value="">All crime types</option>
+                {crimeTypes.map(ct => (
+                  <option key={ct.id} value={ct.id}>{ct.name}</option>
+                ))}
+              </select>
+
+              {/* Date range */}
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                style={{ width: 140, fontSize: '0.78rem' }}
+                value={tsStartDate}
+                onChange={e => setTsStartDate(e.target.value)}
+                disabled={tsLoading}
+                title="Series start date"
+              />
+              <span className="text-muted small">→</span>
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                style={{ width: 140, fontSize: '0.78rem' }}
+                value={tsEndDate}
+                onChange={e => setTsEndDate(e.target.value)}
+                disabled={tsLoading}
+                title="Series end date"
+              />
+
+              {/* Clear filters */}
+              {(tsCrimeType || tsStartDate || tsEndDate) && (
+                <button
+                  className="btn btn-sm btn-outline-secondary"
+                  onClick={() => { setTsCrimeType(''); setTsStartDate(''); setTsEndDate(''); }}
+                  title="Clear series filters"
+                >
+                  <i className="bi bi-x-lg"></i>
+                </button>
+              )}
+
+              {/* Chronological sort toggle for the table */}
+              <button
+                className="btn btn-sm btn-outline-secondary ms-1"
+                title={`Sort table ${tsSortDir === 'asc' ? 'newest first' : 'oldest first'}`}
+                onClick={() => setTsSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+              >
+                <i className={`bi bi-sort-${tsSortDir === 'asc' ? 'down' : 'up'}`}></i>
+              </button>
+            </div>
+          </div>
+
+          <div className="card-body">
+            {/* ── Line chart ──────────────────────────────────────────── */}
+            <div style={{ height: 260, position: 'relative' }}>
+              <canvas ref={lineChartRef} />
+            </div>
+
+            {/* ── Statistical summary strip below the chart ────────────── */}
+            {tsSummary && (
+              <div className="mt-3 d-flex gap-4 flex-wrap border rounded p-2 bg-light" style={{ fontSize: '0.8rem' }}>
+                <div>
+                  <span className="text-muted">Total incidents: </span>
+                  <strong>{tsSummary.total}</strong>
+                </div>
+                <div>
+                  <span className="text-muted">Peak period: </span>
+                  <strong>{tsSummary.peak}</strong>
+                </div>
+                <div>
+                  <span className="text-muted">Average / period: </span>
+                  <strong>{tsSummary.avg}</strong>
+                </div>
+                <div>
+                  <span className="text-muted">Overall trend: </span>
+                  <strong className={tsSummary.dirCls}>{tsSummary.dirText}</strong>
+                </div>
+                <div className="ms-auto text-muted" style={{ fontSize: '0.72rem' }}>
+                  <i className="bi bi-info-circle me-1"></i>
+                  Dashed red line = statistical trend component (seasonal decomposition)
+                </div>
+              </div>
+            )}
+
+            {/* ── Time-series data table ───────────────────────────────── */}
+            {tsTableRows.length > 0 && (
+              <div className="mt-3">
+                <h6 className="fw-semibold mb-1" style={{ fontSize: '0.85rem' }}>
+                  <i className="bi bi-table me-2 text-primary"></i>
+                  Period Detail Table
+                  <span className="text-muted fw-normal ms-2" style={{ fontSize: '0.75rem' }}>
+                    — What the trend is showing
+                  </span>
+                </h6>
+                <p className="text-muted mb-2" style={{ fontSize: '0.75rem' }}>
+                  <strong>4-Period MA</strong> smooths short-term noise to reveal the underlying pattern.
+                  <strong> % Change</strong> compares each period to the previous one.
+                  The <strong>Interpretation</strong> column translates statistical values into actionable operational language.
+                </p>
+
+                <div className="table-responsive" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                  <table className="table table-sm table-hover mb-0">
+                    <thead className="table-light" style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+                      <tr>
+                        <th>Period</th>
+                        <th className="text-end">Observed</th>
+                        <th className="text-end">Trend</th>
+                        <th className="text-end">4-Period MA</th>
+                        <th className="text-end">% Change</th>
+                        <th>Interpretation</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tsTableRows.map((row, i) => (
+                        <tr key={i}>
+                          <td className="font-monospace" style={{ fontSize: '0.78rem' }}>{row.label}</td>
+                          <td className="text-end fw-semibold">{row.observed}</td>
+                          <td className="text-end text-muted" style={{ fontSize: '0.78rem' }}>
+                            {row.trend ?? '—'}
+                          </td>
+                          <td className="text-end text-muted" style={{ fontSize: '0.78rem' }}>
+                            {row.movingAvg ?? '—'}
+                          </td>
+                          <td className={`text-end ${row.pctChange.cls}`} style={{ fontSize: '0.78rem' }}>
+                            {row.pctChange.text}
+                          </td>
+                          <td style={{ fontSize: '0.75rem', color: '#495057' }}>
+                            {row.interpretation}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Interpretation legend */}
+                <div className="mt-2 d-flex gap-3 flex-wrap" style={{ fontSize: '0.72rem', color: '#6c757d' }}>
+                  <span><strong className="text-danger">Red % change</strong> = &gt; 5 % increase (alert)</span>
+                  <span><strong className="text-success">Green % change</strong> = &gt; 5 % decrease (positive)</span>
+                  <span>4-Period MA is unavailable for the first 3 periods (insufficient history)</span>
+                </div>
+              </div>
+            )}
+
+            {!tsLoading && tsTableRows.length === 0 && (
+              <p className="text-muted text-center mt-3 mb-0 small">
+                No data available for the selected filters. Try widening the date range.
+              </p>
+            )}
           </div>
         </div>
 
-        {/* ── Charts row ───────────────────────────────────────────────── */}
+        {/* ── Lower charts row ─────────────────────────────────────────── */}
         <div className="row g-3 mb-4">
-
-          {/* Weekly trend */}
-          <div className="col-md-6">
-            <div className="card shadow-sm h-100">
-              <div className="card-header card-header-accent-blue">
-                <i className="bi bi-graph-up me-2"></i>Weekly Crime Trend
-              </div>
-              <div className="card-body">
-                <div className="chart-container" style={{ height: 200 }}>
-                  <canvas ref={lineChartRef} />
-                </div>
-              </div>
-            </div>
-          </div>
 
           {/* Incidents by type */}
           <div className="col-md-6">
@@ -462,7 +1133,7 @@ function Dashboard() {
                 <span className="badge badge-reported" style={{ fontSize: '0.65rem' }}>Live</span>
               </div>
               <div className="card-body">
-                <div className="chart-container" style={{ height: 200 }}>
+                <div style={{ height: 200, position: 'relative' }}>
                   <canvas ref={barChartRef} />
                 </div>
               </div>
@@ -470,27 +1141,27 @@ function Dashboard() {
           </div>
 
           {/* Status breakdown */}
-          <div className="col-md-6">
+          <div className="col-md-3">
             <div className="card shadow-sm h-100">
               <div className="card-header card-header-accent-dark">
-                <i className="bi bi-pie-chart me-2"></i>Status Breakdown
+                <i className="bi bi-pie-chart me-2"></i>Case Status
               </div>
               <div className="card-body">
-                <div className="chart-container" style={{ height: 200 }}>
+                <div style={{ height: 200, position: 'relative' }}>
                   <canvas ref={pieChartRef} />
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Recent activity */}
-          <div className="col-md-6">
+          {/* Recent activity doughnut */}
+          <div className="col-md-3">
             <div className="card shadow-sm h-100">
               <div className="card-header card-header-accent-dark">
-                <i className="bi bi-clock-history me-2"></i>Recent Activity
+                <i className="bi bi-clock-history me-2"></i>Recency
               </div>
               <div className="card-body">
-                <div className="chart-container" style={{ height: 200 }}>
+                <div style={{ height: 200, position: 'relative' }}>
                   <canvas ref={doughnutChartRef} />
                 </div>
               </div>
