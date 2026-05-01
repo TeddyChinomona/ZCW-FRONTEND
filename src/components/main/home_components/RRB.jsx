@@ -1,203 +1,198 @@
 /**
- * src/components/main/home_components/RRB.jsx  (updated)
+ * src/components/main/home_components/RRB.jsx
  * ─────────────────────────────────────────────────────────────────────────────
  * Report Record Book — creates a new crime incident on the Django backend.
  *
- * Changes from original
- * ─────────────────────
- * • All original form fields and layout preserved exactly
- * • handleSubmit replaced:  alert() → createIncident() API call
- * • Crime type dropdown now populated from GET /api/zrp/crime-types/
- * • Latitude / Longitude inputs added (required by PostGIS backend)
- * • num_suspects, weapon_used, serial_group_label fields added to form
- * • Case number auto-generated (editable) in ZRP-YYYY-NNNNN format
- * • Success banner + reset after submit; error banner on failure
- * • Stolen items list is serialised into modus_operandi JSON block before POST
- *
- * Backend payload  (POST /api/zrp/incidents/)
- * ────────────────────────────────────────────
- * {
- *   case_number, crime_type (ID), timestamp, latitude, longitude,
- *   suburb, description_narrative, modus_operandi,
- *   status, weapon_used, num_suspects, serial_group_label
- * }
+ * Updates:
+ * • Integrated fields from Z.R.P. Form 66 (Report Record): Prosecutor Ref, CRB, 
+ * Accused details, Fingerprints, Exhibits, Value Stolen/Recovered, and Results.
+ * • Integrated fields from Z.R.P. Form 169 (Stolen Property): Complainant Name/Age/Sex.
+ * • Interactive Leaflet Map for geographic selection.
+ * • Complex form state is serialized into structured narrative blocks for the backend.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { createIncident, getCrimeTypes } from '../../../services/crimeService';
 
-// ─── Auto-generate a case number  ZRP-YYYY-NNNNN ─────────────────────────────
+import icon from 'leaflet/dist/images/marker-icon.png';
+import iconShadow from 'leaflet/dist/images/marker-shadow.png';
+let DefaultIcon = L.icon({
+  iconUrl: icon, shadowUrl: iconShadow, iconAnchor: [12, 41], popupAnchor: [1, -34],
+});
+L.Marker.prototype.options.icon = DefaultIcon;
+
 const generateCaseNumber = () => {
   const year = new Date().getFullYear();
   const rand = String(Math.floor(Math.random() * 99999)).padStart(5, '0');
   return `ZRP-${year}-${rand}`;
 };
 
-// ─── Initial form state ───────────────────────────────────────────────────────
+// ─── Expanded Initial Form State (Form 66 & 169) ─────────────────────────────
 const INITIAL_FORM = {
+  // Admin & Ref
   caseNumber: generateCaseNumber(),
-  station: '',
-  section: '',
+  prosecutorRef: '', crbNo: '', policeFilingRef: '',
+  station: '', section: '', investigatingOfficer: '',
+  reportReceivedDate: '', reportReceivedTime: '', reportReceivedBy: '',
+
+  // Complainant (Form 66/169)
   complainant: {
-    rcNr: '',
-    residentialAddress: '',
-    residentialPhone: '',
-    businessAddress: '',
-    businessPhone: '',
+    name: '', rcNr: '', race: '', sex: '', age: '',
+    residentialAddress: '', residentialPhone: '',
+    businessAddress: '', businessPhone: ''
   },
+
+  // Accused (Form 66)
+  accused: {
+    name: '', rcNr: '', race: '', sex: '', age: '',
+    residentialAddress: '', residentialPhone: '',
+    businessAddress: '', businessPhone: ''
+  },
+
+  // Occurrence
   crimeTypeId: '',
-  timeDateCommitted: '',
-  suburb: '',
-  latitude: '',
-  longitude: '',
-  briefDetails: '',
-  modusOperandi: '',
-  weaponUsed: '',
-  numSuspects: 0,
-  serialGroupLabel: '',
-  investigatingOfficer: '',
+  occStartDatetime: '', occEndDatetime: '',
+  suburb: '', latitude: '', longitude: '',
+
+  // Details & Forensics (Form 66)
+  briefDetails: '', modusOperandi: '', weaponUsed: '', numSuspects: 0, serialGroupLabel: '',
+  valueStolen: '', valueRecovered: '', exhibitsHeld: 'NO',
+  fingerprintsFound: 'NEG', cidReference: '', resultsFindings: '', status: 'reported',
+
   stolenItems: [],
-  status: 'reported',
 };
 
 const INITIAL_ITEM = { description: '', identifyingMarks: '', dateRecovered: '' };
 
-// ─── Component ────────────────────────────────────────────────────────────────
 function RRB() {
   const [formData, setFormData] = useState(INITIAL_FORM);
   const [currentItem, setCurrentItem] = useState(INITIAL_ITEM);
   const [showRecoverySection, setShowRecoverySection] = useState(false);
   const [cancellationOfficer, setCancellationOfficer] = useState('');
 
-  // API state
   const [crimeTypes, setCrimeTypes] = useState([]);
   const [crimeTypesLoading, setCrimeTypesLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [submitSuccess, setSubmitSuccess] = useState(null); // submitted incident obj
+  const [submitSuccess, setSubmitSuccess] = useState(null);
   const [submitError, setSubmitError] = useState('');
+  const [isResolvingAddress, setIsResolvingAddress] = useState(false);
 
-  // ── Load crime types for dropdown ──────────────────────────────────────
+  const mapRef = useRef(null);
+  const mapInstance = useRef(null);
+  const markerInstance = useRef(null);
+
   useEffect(() => {
     setCrimeTypesLoading(true);
-    getCrimeTypes()
-      .then(setCrimeTypes)
-      .catch(() => setCrimeTypes([]))
-      .finally(() => setCrimeTypesLoading(false));
+    getCrimeTypes().then(setCrimeTypes).catch(() => setCrimeTypes([])).finally(() => setCrimeTypesLoading(false));
   }, []);
 
-  // ── Generic input handler ───────────────────────────────────────────────
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    if (name.includes('.')) {
-      const [parent, child] = name.split('.');
-      setFormData((prev) => ({
-        ...prev,
-        [parent]: { ...prev[parent], [child]: value },
-      }));
-    } else {
-      setFormData((prev) => ({ ...prev, [name]: value }));
+  useEffect(() => {
+    if (!mapInstance.current && mapRef.current) {
+      const defaultCenter = [-17.8292, 31.0522];
+      mapInstance.current = L.map(mapRef.current).setView(defaultCenter, 13);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(mapInstance.current);
+      markerInstance.current = L.marker(defaultCenter, { draggable: true }).addTo(mapInstance.current);
+
+      mapInstance.current.on('click', (e) => {
+        markerInstance.current.setLatLng(e.latlng);
+        handleLocationSelect(e.latlng.lat, e.latlng.lng);
+      });
+      markerInstance.current.on('dragend', () => {
+        const pos = markerInstance.current.getLatLng();
+        handleLocationSelect(pos.lat, pos.lng);
+      });
+    }
+    return () => {
+      if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; }
+    };
+  }, []);
+
+  const handleLocationSelect = async (lat, lng) => {
+    setFormData(prev => ({ ...prev, latitude: lat.toFixed(6), longitude: lng.toFixed(6) }));
+    setIsResolvingAddress(true);
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+      const data = await res.json();
+      if (data?.address) {
+        const areaName = data.address.suburb || data.address.neighbourhood || data.address.city || "";
+        if (areaName) setFormData(prev => ({ ...prev, suburb: areaName }));
+      }
+    } catch (err) {
+      console.warn(err);
+    } finally {
+      setIsResolvingAddress(false);
     }
   };
 
-  const handleItemChange = (e) => {
-    const { name, value } = e.target;
-    setCurrentItem((prev) => ({ ...prev, [name]: value }));
+  const handleInputChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    const val = type === 'checkbox' ? checked : value;
+    if (name.includes('.')) {
+      const [parent, child] = name.split('.');
+      setFormData(prev => ({ ...prev, [parent]: { ...prev[parent], [child]: val } }));
+    } else {
+      setFormData(prev => ({ ...prev, [name]: val }));
+    }
   };
 
+  const handleItemChange = (e) => setCurrentItem(prev => ({ ...prev, [e.target.name]: e.target.value }));
+
   const addStolenItem = () => {
-    if (currentItem.description && currentItem.identifyingMarks) {
-      setFormData((prev) => ({
-        ...prev,
-        stolenItems: [...prev.stolenItems, { ...currentItem, id: Date.now() }],
-      }));
+    if (currentItem.description) {
+      setFormData(prev => ({ ...prev, stolenItems: [...prev.stolenItems, { ...currentItem, id: Date.now() }] }));
       setCurrentItem(INITIAL_ITEM);
     }
   };
 
-  const removeStolenItem = (id) => {
-    setFormData((prev) => ({
-      ...prev,
-      stolenItems: prev.stolenItems.filter((item) => item.id !== id),
-    }));
-  };
+  const removeStolenItem = (id) => setFormData(prev => ({ ...prev, stolenItems: prev.stolenItems.filter(i => i.id !== id) }));
+  const markAsRecovered = (id, date) => setFormData(prev => ({ ...prev, stolenItems: prev.stolenItems.map(i => i.id === id ? { ...i, dateRecovered: date } : i) }));
 
-  const markAsRecovered = (id, date) => {
-    setFormData((prev) => ({
-      ...prev,
-      stolenItems: prev.stolenItems.map((item) =>
-        item.id === id ? { ...item, dateRecovered: date } : item,
-      ),
-    }));
-  };
-
-  // ── Build backend payload and submit ────────────────────────────────────
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setSubmitError('');
-    setSubmitSuccess(null);
+    setSubmitError(''); setSubmitSuccess(null);
 
-    // Validate required fields
-    if (!formData.crimeTypeId) { setSubmitError('Please select a crime type (Offence).'); return; }
-    if (!formData.timeDateCommitted) { setSubmitError('Please enter the time and date committed.'); return; }
-    if (!formData.suburb.trim()) { setSubmitError('Scene of Crime / Suburb is required.'); return; }
-    if (!formData.latitude || !formData.longitude) { setSubmitError('Latitude and Longitude are required for spatial mapping.'); return; }
+    if (!formData.crimeTypeId) { setSubmitError('Offence type is required.'); return; }
+    if (!formData.occStartDatetime) { setSubmitError('Occurrence start time is required.'); return; }
+    if (!formData.latitude || !formData.longitude) { setSubmitError('Please drop a pin on the map.'); return; }
 
-    // Serialise stolen items into the modus_operandi field if no MO was typed
-    const stolenItemsText = formData.stolenItems.length
-      ? '\n\n--- STOLEN ITEMS ---\n' +
-        formData.stolenItems
-          .map((item, i) =>
-            `${i + 1}. ${item.description} | Marks: ${item.identifyingMarks}${item.dateRecovered ? ` | Recovered: ${item.dateRecovered}` : ''}`,
-          )
-          .join('\n')
-      : '';
+    // Serialize Form 66 Fields into the Narrative blocks for the backend
+    const adminBlock = `--- ADMIN & REFS ---\nProsecutor Ref: ${formData.prosecutorRef} | CRB: ${formData.crbNo} | Filing Ref: ${formData.policeFilingRef}\nReceived: ${formData.reportReceivedDate} ${formData.reportReceivedTime} by ${formData.reportReceivedBy}\nOccurred Between: ${formData.occStartDatetime} and ${formData.occEndDatetime}`;
+    
+    const c = formData.complainant;
+    const complainantBlock = `--- COMPLAINANT ---\nName: ${c.name} | NR: ${c.rcNr} | Race: ${c.race} | Sex: ${c.sex} | Age: ${c.age}\nRes: ${c.residentialAddress} (Tel: ${c.residentialPhone})\nBus: ${c.businessAddress} (Tel: ${c.businessPhone})`;
+    
+    const a = formData.accused;
+    const accusedBlock = `--- ACCUSED ---\nName: ${a.name} | NR: ${a.rcNr} | Race: ${a.race} | Sex: ${a.sex} | Age: ${a.age}\nRes: ${a.residentialAddress} (Tel: ${a.residentialPhone})\nBus: ${a.businessAddress} (Tel: ${a.businessPhone})`;
 
-    const moText = [formData.modusOperandi, stolenItemsText].filter(Boolean).join('');
+    const forensicsBlock = `--- FORENSICS & FINDINGS ---\nValue Stolen: ${formData.valueStolen} | Value Recovered: ${formData.valueRecovered}\nExhibits Held: ${formData.exhibitsHeld} | Fingerprints: ${formData.fingerprintsFound} (CID Ref: ${formData.cidReference})\nResults: ${formData.resultsFindings}`;
 
-    // Build complainant info block for description
-    const complainantBlock =
-      `Complainant: ${formData.complainant.rcNr} | ` +
-      `Res. Address: ${formData.complainant.residentialAddress} | ` +
-      `Phone: ${formData.complainant.residentialPhone} | ` +
-      `Business: ${formData.complainant.businessAddress} | ` +
-      `Bus. Phone: ${formData.complainant.businessPhone} | ` +
-      `Station: ${formData.station} | Section: ${formData.section} | ` +
-      `Investigating Officer: ${formData.investigatingOfficer}`;
+    const stolenItemsText = formData.stolenItems.length ? '\n--- STOLEN ITEMS (FORM 169) ---\n' + formData.stolenItems.map((item, i) => `${i + 1}. ${item.description} | Marks: ${item.identifyingMarks}${item.dateRecovered ? ` | Recovered: ${item.dateRecovered}` : ''}`).join('\n') : '';
 
     const payload = {
-      case_number:           formData.caseNumber,
-      crime_type:            Number(formData.crimeTypeId),
-      timestamp:             new Date(formData.timeDateCommitted).toISOString(),
-      latitude:              parseFloat(formData.latitude),
-      longitude:             parseFloat(formData.longitude),
-      suburb:                formData.suburb.trim(),
-      description_narrative: [formData.briefDetails, complainantBlock].filter(Boolean).join('\n\n'),
-      modus_operandi:        moText,
-      status:                formData.status,
-      weapon_used:           formData.weaponUsed,
-      num_suspects:          Number(formData.numSuspects) || 0,
-      serial_group_label:    formData.serialGroupLabel,
+      case_number: formData.caseNumber,
+      crime_type: Number(formData.crimeTypeId),
+      timestamp: new Date(formData.occStartDatetime).toISOString(), // Primary backend timestamp
+      latitude: parseFloat(formData.latitude),
+      longitude: parseFloat(formData.longitude),
+      suburb: formData.suburb.trim(),
+      description_narrative: [adminBlock, complainantBlock, accusedBlock, forensicsBlock, formData.briefDetails].filter(Boolean).join('\n\n'),
+      modus_operandi: [formData.modusOperandi, stolenItemsText].filter(Boolean).join('\n'),
+      status: formData.status,
+      weapon_used: formData.weaponUsed,
+      num_suspects: Number(formData.numSuspects) || 0,
+      serial_group_label: formData.serialGroupLabel,
     };
 
     setSubmitting(true);
     try {
       const created = await createIncident(payload);
       setSubmitSuccess(created);
-      // Reset form with a fresh case number
-      setFormData({ ...INITIAL_FORM, caseNumber: generateCaseNumber() });
-      setCancellationOfficer('');
-      setShowRecoverySection(false);
+      handleReset();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
-      const data = err.response?.data;
-      if (data && typeof data === 'object') {
-        const messages = Object.entries(data)
-          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-          .join(' | ');
-        setSubmitError(messages);
-      } else {
-        setSubmitError('Submission failed. Please check your connection and try again.');
-      }
+      setSubmitError(err.response?.data ? JSON.stringify(err.response.data) : 'Submission failed.');
     } finally {
       setSubmitting(false);
     }
@@ -205,574 +200,238 @@ function RRB() {
 
   const handleReset = () => {
     setFormData({ ...INITIAL_FORM, caseNumber: generateCaseNumber() });
-    setSubmitError('');
-    setSubmitSuccess(null);
-    setCancellationOfficer('');
-    setShowRecoverySection(false);
+    setSubmitError(''); setSubmitSuccess(null);
+    if (markerInstance.current && mapInstance.current) {
+      markerInstance.current.setLatLng([-17.8292, 31.0522]);
+      mapInstance.current.setView([-17.8292, 31.0522], 13);
+    }
   };
 
   return (
     <div className="topbar container-fluid">
       <div className="container-fluid">
-
-        {/* ── Header ─────────────────────────────────────────────────────── */}
-        <div className="row mb-4">
-          <div className="col-12">
-            <div className="card shadow-sm border-primary">
-              <div className="card-header bg-dark text-white text-center py-3">
-                <h3 className="mb-0 fw-bold">
-                  <i className="bi bi-journal-text me-2"></i>
-                  ZIMBABWE REPUBLIC POLICE
-                </h3>
-                <h5 className="mb-0">REPORT RECORD BOOK (R.R.B.)</h5>
-                <small className="text-warning">
-                  Z.P. 37 — RECORD OF PROPERTY REPORTED STOLEN / REGISTER OF CRIME ENTRIES
-                </small>
-              </div>
-            </div>
+        {/* Header */}
+        <div className="card shadow-sm border-dark mb-4">
+          <div className="card-header bg-dark text-white text-center py-3">
+            <h3 className="mb-0 fw-bold">ZIMBABWE REPUBLIC POLICE</h3>
+            <h5 className="mb-0">REPORT RECORD BOOK (FORM 66 & 169)</h5>
           </div>
         </div>
 
-        {/* ── Success banner ──────────────────────────────────────────────── */}
-        {submitSuccess && (
-          <div className="alert alert-success alert-dismissible mb-4 d-flex align-items-start" role="alert">
-            <i className="bi bi-check-circle-fill fs-4 me-3 mt-1"></i>
-            <div>
-              <strong>Incident submitted successfully!</strong>
-              <div className="small mt-1">
-                Case number <strong>{submitSuccess.case_number}</strong> (ID: {submitSuccess.id}) has been recorded in the system.
-              </div>
-            </div>
-            <button className="btn-close ms-auto" onClick={() => setSubmitSuccess(null)}></button>
-          </div>
-        )}
+        {submitSuccess && <div className="alert alert-success">Incident {submitSuccess.case_number} recorded successfully!</div>}
+        {submitError && <div className="alert alert-danger">Error: {submitError}</div>}
 
-        {/* ── Error banner ─────────────────────────────────────────────────── */}
-        {submitError && (
-          <div className="alert alert-danger alert-dismissible mb-4" role="alert">
-            <i className="bi bi-exclamation-triangle-fill me-2"></i>
-            <strong>Submission Error:</strong> {submitError}
-            <button className="btn-close" onClick={() => setSubmitError('')}></button>
-          </div>
-        )}
-
-        {/* ── Form ─────────────────────────────────────────────────────────── */}
         <form onSubmit={handleSubmit}>
           <div className="row">
+            <div className="col-lg-8">
 
-            {/* ══ LEFT COLUMN ══════════════════════════════════════════════ */}
-            <div className="col-md-8">
-
-              {/* Case Reference Card */}
+              {/* ── Admin & References (Form 66) ── */}
               <div className="card mb-4 shadow-sm">
-                <div className="card-header bg-dark text-white">
-                  <h5 className="mb-0"><i className="bi bi-hash me-2"></i>Case Reference</h5>
-                </div>
-                <div className="card-body">
-                  <div className="row">
-                    <div className="col-md-4 mb-3">
-                      <label className="form-label fw-semibold">Case Number (C.R./L.P.B.)</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="caseNumber"
-                        value={formData.caseNumber}
-                        onChange={handleInputChange}
-                        placeholder="ZRP-YYYY-NNNNN"
-                        required
-                      />
-                    </div>
-                    <div className="col-md-4 mb-3">
-                      <label className="form-label fw-semibold">Station</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="station"
-                        value={formData.station}
-                        onChange={handleInputChange}
-                        placeholder="Enter station name"
-                      />
-                    </div>
-                    <div className="col-md-4 mb-3">
-                      <label className="form-label fw-semibold">Section</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="section"
-                        value={formData.section}
-                        onChange={handleInputChange}
-                        placeholder="Enter section"
-                      />
-                    </div>
+                <div className="card-header bg-secondary text-white fw-bold">Administrative & References</div>
+                <div className="card-body bg-light">
+                  <div className="row g-2 mb-2">
+                    <div className="col-md-3"><label className="small fw-bold">Station</label><input type="text" className="form-control form-control-sm" name="station" value={formData.station} onChange={handleInputChange} /></div>
+                    <div className="col-md-3"><label className="small fw-bold">Section Ref</label><input type="text" className="form-control form-control-sm" name="section" value={formData.section} onChange={handleInputChange} /></div>
+                    <div className="col-md-3"><label className="small fw-bold">Invest. Off.</label><input type="text" className="form-control form-control-sm" name="investigatingOfficer" value={formData.investigatingOfficer} onChange={handleInputChange} /></div>
+                    <div className="col-md-3"><label className="small fw-bold text-primary">C.R. / L.P.B. No</label><input type="text" className="form-control form-control-sm border-primary" name="caseNumber" value={formData.caseNumber} onChange={handleInputChange} required /></div>
+                  </div>
+                  <div className="row g-2 mb-3">
+                    <div className="col-md-4"><label className="small">Prosecutor's Ref</label><input type="text" className="form-control form-control-sm" name="prosecutorRef" value={formData.prosecutorRef} onChange={handleInputChange} /></div>
+                    <div className="col-md-4"><label className="small">C.R.B. No</label><input type="text" className="form-control form-control-sm" name="crbNo" value={formData.crbNo} onChange={handleInputChange} /></div>
+                    <div className="col-md-4"><label className="small">Police Filing Ref</label><input type="text" className="form-control form-control-sm" name="policeFilingRef" value={formData.policeFilingRef} onChange={handleInputChange} /></div>
+                  </div>
+                  <hr className="my-2"/>
+                  <div className="row g-2">
+                    <div className="col-md-4"><label className="small">Report Received (Date)</label><input type="date" className="form-control form-control-sm" name="reportReceivedDate" value={formData.reportReceivedDate} onChange={handleInputChange} /></div>
+                    <div className="col-md-4"><label className="small">Time</label><input type="time" className="form-control form-control-sm" name="reportReceivedTime" value={formData.reportReceivedTime} onChange={handleInputChange} /></div>
+                    <div className="col-md-4"><label className="small">By (Officer)</label><input type="text" className="form-control form-control-sm" name="reportReceivedBy" value={formData.reportReceivedBy} onChange={handleInputChange} /></div>
                   </div>
                 </div>
               </div>
 
-              {/* Complainant Details Card */}
-              <div className="card mb-4 shadow-sm">
-                <div className="card-header bg-primary text-white">
-                  <h5 className="mb-0"><i className="bi bi-person-fill me-2"></i>Complainant Information</h5>
-                </div>
+              {/* ── Occurrence & Map ── */}
+              <div className="card mb-4 shadow-sm border-warning">
+                <div className="card-header bg-warning text-dark fw-bold">Offence & Occurrence</div>
                 <div className="card-body">
-                  <div className="row">
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label">R.C./N.R.</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="complainant.rcNr"
-                        value={formData.complainant.rcNr}
-                        onChange={handleInputChange}
-                        placeholder="National Registration Number"
-                      />
-                    </div>
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label">Residential Address</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="complainant.residentialAddress"
-                        value={formData.complainant.residentialAddress}
-                        onChange={handleInputChange}
-                        placeholder="Home address"
-                      />
-                    </div>
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label">Residential Phone</label>
-                      <input
-                        type="tel"
-                        className="form-control"
-                        name="complainant.residentialPhone"
-                        value={formData.complainant.residentialPhone}
-                        onChange={handleInputChange}
-                        placeholder="+263 77 XXX XXXX"
-                      />
-                    </div>
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label">Business Address</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="complainant.businessAddress"
-                        value={formData.complainant.businessAddress}
-                        onChange={handleInputChange}
-                        placeholder="Workplace address"
-                      />
-                    </div>
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label">Business Phone</label>
-                      <input
-                        type="tel"
-                        className="form-control"
-                        name="complainant.businessPhone"
-                        value={formData.complainant.businessPhone}
-                        onChange={handleInputChange}
-                        placeholder="+263 4 XXX XXXX"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Incident Details Card */}
-              <div className="card mb-4 shadow-sm">
-                <div className="card-header bg-warning text-dark">
-                  <h5 className="mb-0"><i className="bi bi-exclamation-triangle-fill me-2"></i>Incident Details</h5>
-                </div>
-                <div className="card-body">
-                  <div className="row">
-                    {/* Crime Type (Offence) */}
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label fw-semibold">Offence / Crime Type <span className="text-danger">*</span></label>
-                      <select
-                        className="form-select"
-                        name="crimeTypeId"
-                        value={formData.crimeTypeId}
-                        onChange={handleInputChange}
-                        required
-                        disabled={crimeTypesLoading}
-                      >
-                        <option value="">
-                          {crimeTypesLoading ? 'Loading crime types…' : '— Select offence —'}
-                        </option>
-                        {crimeTypes.map((ct) => (
-                          <option key={ct.id} value={ct.id}>{ct.name}</option>
-                        ))}
+                  <div className="row g-3 mb-3">
+                    <div className="col-md-6">
+                      <label className="fw-bold small">Offence / Crime Type <span className="text-danger">*</span></label>
+                      <select className="form-select form-select-sm" name="crimeTypeId" value={formData.crimeTypeId} onChange={handleInputChange} required>
+                        <option value="">— Select —</option>
+                        {crimeTypes.map(ct => <option key={ct.id} value={ct.id}>{ct.name}</option>)}
                       </select>
                     </div>
-
-                    {/* Status */}
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label fw-semibold">Status</label>
-                      <select
-                        className="form-select"
-                        name="status"
-                        value={formData.status}
-                        onChange={handleInputChange}
-                      >
+                    <div className="col-md-6">
+                      <label className="fw-bold small">Status</label>
+                      <select className="form-select form-select-sm" name="status" value={formData.status} onChange={handleInputChange}>
                         <option value="reported">Reported</option>
                         <option value="under_investigation">Under Investigation</option>
                         <option value="closed">Closed</option>
-                        <option value="unsolved">Unsolved</option>
                       </select>
                     </div>
-
-                    {/* Timestamp */}
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label fw-semibold">Time and Date Committed <span className="text-danger">*</span></label>
-                      <input
-                        type="datetime-local"
-                        className="form-control"
-                        name="timeDateCommitted"
-                        value={formData.timeDateCommitted}
-                        onChange={handleInputChange}
-                        required
-                      />
+                  </div>
+                  <div className="row g-3 mb-3">
+                    <div className="col-md-6">
+                      <label className="fw-bold small">Occurred Between (Start) <span className="text-danger">*</span></label>
+                      <input type="datetime-local" className="form-control form-control-sm" name="occStartDatetime" value={formData.occStartDatetime} onChange={handleInputChange} required />
                     </div>
-
-                    {/* Scene of Crime / Suburb */}
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label fw-semibold">Scene of Crime / Suburb <span className="text-danger">*</span></label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="suburb"
-                        value={formData.suburb}
-                        onChange={handleInputChange}
-                        placeholder="e.g. Mbare, Borrowdale, CBD"
-                        required
-                      />
-                    </div>
-
-                    {/* Coordinates */}
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label fw-semibold">
-                        Latitude <span className="text-danger">*</span>
-                        <small className="text-muted ms-2">(WGS-84, e.g. -17.8292)</small>
-                      </label>
-                      <input
-                        type="number"
-                        step="any"
-                        className="form-control"
-                        name="latitude"
-                        value={formData.latitude}
-                        onChange={handleInputChange}
-                        placeholder="-17.8292"
-                        required
-                      />
-                    </div>
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label fw-semibold">
-                        Longitude <span className="text-danger">*</span>
-                        <small className="text-muted ms-2">(e.g. 31.0522)</small>
-                      </label>
-                      <input
-                        type="number"
-                        step="any"
-                        className="form-control"
-                        name="longitude"
-                        value={formData.longitude}
-                        onChange={handleInputChange}
-                        placeholder="31.0522"
-                        required
-                      />
-                    </div>
-
-                    {/* Weapon used */}
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label">Weapon Used</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="weaponUsed"
-                        value={formData.weaponUsed}
-                        onChange={handleInputChange}
-                        placeholder="e.g. Knife, Firearm, Unknown"
-                      />
-                    </div>
-
-                    {/* Number of suspects */}
-                    <div className="col-md-6 mb-3">
-                      <label className="form-label">Number of Suspects</label>
-                      <input
-                        type="number"
-                        min={0}
-                        className="form-control"
-                        name="numSuspects"
-                        value={formData.numSuspects}
-                        onChange={handleInputChange}
-                      />
-                    </div>
-
-                    {/* Serial group */}
-                    <div className="col-md-12 mb-3">
-                      <label className="form-label">Serial Group Label</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="serialGroupLabel"
-                        value={formData.serialGroupLabel}
-                        onChange={handleInputChange}
-                        placeholder="e.g. 'Mbare Burglar 2024' — links related serial incidents"
-                      />
+                    <div className="col-md-6">
+                      <label className="fw-bold small">And (End) <span className="text-muted fw-normal">(Optional)</span></label>
+                      <input type="datetime-local" className="form-control form-control-sm" name="occEndDatetime" value={formData.occEndDatetime} onChange={handleInputChange} />
                     </div>
                   </div>
 
-                  {/* Description / MO */}
-                  <div className="mb-3">
-                    <label className="form-label fw-semibold">Brief Details of Offence</label>
-                    <textarea
-                      className="form-control"
-                      name="briefDetails"
-                      value={formData.briefDetails}
-                      onChange={handleInputChange}
-                      rows={3}
-                      placeholder="Provide detailed description of the incident…"
-                    />
-                  </div>
-                  <div className="mb-3">
-                    <label className="form-label fw-semibold">Modus Operandi</label>
-                    <textarea
-                      className="form-control"
-                      name="modusOperandi"
-                      value={formData.modusOperandi}
-                      onChange={handleInputChange}
-                      rows={3}
-                      placeholder="How the crime was carried out, patterns, entry method…"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Stolen Items Card */}
-              <div className="card mb-4 shadow-sm">
-                <div className="card-header bg-danger text-white">
-                  <h5 className="mb-0"><i className="bi bi-bag-x-fill me-2"></i>Property Reported Stolen</h5>
-                </div>
-                <div className="card-body">
-                  {/* Add item form */}
-                  <div className="row g-2 mb-3">
-                    <div className="col-md-5">
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="description"
-                        value={currentItem.description}
-                        onChange={handleItemChange}
-                        placeholder="Item description"
-                      />
-                    </div>
-                    <div className="col-md-5">
-                      <input
-                        type="text"
-                        className="form-control"
-                        name="identifyingMarks"
-                        value={currentItem.identifyingMarks}
-                        onChange={handleItemChange}
-                        placeholder="Identifying marks / serial number"
-                      />
-                    </div>
-                    <div className="col-md-2">
-                      <button
-                        type="button"
-                        className="btn btn-danger w-100"
-                        onClick={addStolenItem}
-                        disabled={!currentItem.description || !currentItem.identifyingMarks}
-                      >
-                        <i className="bi bi-plus-circle"></i>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Items table */}
-                  {formData.stolenItems.length === 0 ? (
-                    <p className="text-muted text-center py-3 small">No stolen items added yet</p>
-                  ) : (
-                    <div className="table-responsive">
-                      <table className="table table-sm table-hover">
-                        <thead className="table-light">
-                          <tr>
-                            <th>#</th>
-                            <th>Description</th>
-                            <th>Identifying Marks</th>
-                            <th>Date Recovered</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {formData.stolenItems.map((item, idx) => (
-                            <tr key={item.id} className={item.dateRecovered ? 'table-success' : ''}>
-                              <td>{idx + 1}</td>
-                              <td>{item.description}</td>
-                              <td>{item.identifyingMarks}</td>
-                              <td>
-                                {item.dateRecovered ? (
-                                  <span className="badge bg-success">{item.dateRecovered}</span>
-                                ) : (
-                                  <input
-                                    type="date"
-                                    className="form-control form-control-sm"
-                                    style={{ width: 140 }}
-                                    onChange={(e) => markAsRecovered(item.id, e.target.value)}
-                                  />
-                                )}
-                              </td>
-                              <td>
-                                <button
-                                  type="button"
-                                  className="btn btn-sm btn-outline-danger"
-                                  onClick={() => removeStolenItem(item.id)}
-                                >
-                                  <i className="bi bi-trash"></i>
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  {/* Recovery section toggle */}
-                  <div className="mt-3">
-                    <button
-                      type="button"
-                      className="btn btn-outline-success btn-sm"
-                      onClick={() => setShowRecoverySection(!showRecoverySection)}
-                    >
-                      <i className="bi bi-arrow-return-left me-1"></i>
-                      {showRecoverySection ? 'Hide' : 'Show'} Cancellation / Recovery Section
-                    </button>
-                  </div>
-
-                  {showRecoverySection && (
-                    <div className="mt-3 p-3 bg-light rounded border">
-                      <h6 className="fw-bold">Cancellation / CRO Forwarding</h6>
-                      <p className="text-muted small">
-                        This form must be submitted to C.R.O. in triplicate. One copy will be returned to the
-                        Investigating Officer indicating that carding has been effected. In the event of some or
-                        all of the stolen property being recovered, the date will be entered in the "recovery"
-                        column opposite recovered items and the form forwarded to C.R.O. for amendment of their
-                        records.
-                      </p>
-                      <label className="form-label">Cancellation Officer</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        value={cancellationOfficer}
-                        onChange={(e) => setCancellationOfficer(e.target.value)}
-                        placeholder="Officer name & badge number"
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* ══ RIGHT COLUMN ═════════════════════════════════════════════ */}
-            <div className="col-md-4">
-
-              {/* Case Summary Card */}
-              <div className="card mb-4 shadow-sm sticky-top" style={{ top: 80 }}>
-                <div className="card-header bg-success text-white">
-                  <h5 className="mb-0"><i className="bi bi-clipboard-data me-2"></i>Case Summary</h5>
-                </div>
-                <div className="card-body">
-                  <div className="mb-3">
-                    <strong className="text-muted small d-block">Case Number</strong>
-                    <span className="fw-bold text-primary">{formData.caseNumber}</span>
-                  </div>
-                  <div className="mb-3">
-                    <strong className="text-muted small d-block">Crime Type</strong>
-                    <span>
-                      {formData.crimeTypeId
-                        ? crimeTypes.find((ct) => String(ct.id) === String(formData.crimeTypeId))?.name ?? '—'
-                        : '—'}
-                    </span>
-                  </div>
-                  <div className="mb-3">
-                    <strong className="text-muted small d-block">Location</strong>
-                    <span>{formData.suburb || '—'}</span>
-                    {formData.latitude && formData.longitude && (
-                      <div className="text-muted small">
-                        {parseFloat(formData.latitude).toFixed(4)}, {parseFloat(formData.longitude).toFixed(4)}
+                  <div className="p-2 border rounded bg-light">
+                    <label className="fw-bold small text-primary mb-2"><i className="bi bi-pin-map-fill"></i> Place of Occurrence <span className="text-danger">*</span></label>
+                    <div ref={mapRef} style={{ height: '250px', width: '100%', borderRadius: '4px' }} className="mb-2 border" />
+                    <div className="row g-2">
+                      <div className="col-md-6">
+                        <input type="text" className="form-control form-control-sm" name="suburb" value={formData.suburb} onChange={handleInputChange} placeholder="Suburb / Scene Name" required />
                       </div>
-                    )}
-                  </div>
-                  <div className="mb-3">
-                    <strong className="text-muted small d-block">Date / Time</strong>
-                    <span>
-                      {formData.timeDateCommitted
-                        ? new Date(formData.timeDateCommitted).toLocaleString()
-                        : '—'}
-                    </span>
-                  </div>
-                  <hr />
-                  <div className="mb-3">
-                    <strong>Total Items Reported:</strong>
-                    <h2 className="text-primary">{formData.stolenItems.length}</h2>
-                  </div>
-                  <div className="mb-3">
-                    <strong>Recovered Items:</strong>
-                    <h2 className="text-success">
-                      {formData.stolenItems.filter((i) => i.dateRecovered).length}
-                    </h2>
-                  </div>
-                  <div className="mb-3">
-                    <strong>Pending Recovery:</strong>
-                    <h2 className="text-warning">
-                      {formData.stolenItems.filter((i) => !i.dateRecovered).length}
-                    </h2>
+                      <div className="col-md-3">
+                        <input type="text" className="form-control form-control-sm" value={formData.latitude} readOnly placeholder="Lat" />
+                      </div>
+                      <div className="col-md-3">
+                        <input type="text" className="form-control form-control-sm" value={formData.longitude} readOnly placeholder="Lng" />
+                      </div>
+                    </div>
                   </div>
                 </div>
+              </div>
 
-                {/* Investigating Officer Card */}
-                <div className="card-footer bg-info bg-opacity-10">
-                  <label className="form-label fw-bold small">Investigating Officer</label>
-                  <input
-                    type="text"
-                    className="form-control form-control-sm"
-                    name="investigatingOfficer"
-                    value={formData.investigatingOfficer}
-                    onChange={handleInputChange}
-                    placeholder="Officer name & badge ID"
-                  />
-                  <small className="text-muted d-block mt-1">
-                    Note: This form must be submitted to C.R.O.
-                  </small>
+              {/* ── Complainant & Accused (Form 66) ── */}
+              <div className="row mb-4">
+                <div className="col-md-6">
+                  <div className="card shadow-sm h-100 border-primary">
+                    <div className="card-header bg-primary text-white py-2 small fw-bold">COMPLAINANT / INFORMANT</div>
+                    <div className="card-body p-2">
+                      <input type="text" className="form-control form-control-sm mb-2" name="complainant.name" value={formData.complainant.name} onChange={handleInputChange} placeholder="Full Name" />
+                      <input type="text" className="form-control form-control-sm mb-2" name="complainant.rcNr" value={formData.complainant.rcNr} onChange={handleInputChange} placeholder="Nat. Reg. No." />
+                      <div className="input-group input-group-sm mb-2">
+                        <input type="text" className="form-control" name="complainant.race" value={formData.complainant.race} onChange={handleInputChange} placeholder="Race" />
+                        <select className="form-select" name="complainant.sex" value={formData.complainant.sex} onChange={handleInputChange}>
+                          <option value="">Sex</option><option value="M">M</option><option value="F">F</option>
+                        </select>
+                        <input type="number" className="form-control" name="complainant.age" value={formData.complainant.age} onChange={handleInputChange} placeholder="Age" />
+                      </div>
+                      <input type="text" className="form-control form-control-sm mb-2" name="complainant.residentialAddress" value={formData.complainant.residentialAddress} onChange={handleInputChange} placeholder="Res. Address" />
+                      <input type="text" className="form-control form-control-sm mb-2" name="complainant.residentialPhone" value={formData.complainant.residentialPhone} onChange={handleInputChange} placeholder="Res. Phone" />
+                      <input type="text" className="form-control form-control-sm mb-2" name="complainant.businessAddress" value={formData.complainant.businessAddress} onChange={handleInputChange} placeholder="Bus. Address" />
+                      <input type="text" className="form-control form-control-sm" name="complainant.businessPhone" value={formData.complainant.businessPhone} onChange={handleInputChange} placeholder="Bus. Phone" />
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="col-md-6">
+                  <div className="card shadow-sm h-100 border-danger">
+                    <div className="card-header bg-danger text-white py-2 small fw-bold">ACCUSED / SUSPECT</div>
+                    <div className="card-body p-2">
+                      <input type="text" className="form-control form-control-sm mb-2" name="accused.name" value={formData.accused.name} onChange={handleInputChange} placeholder="Full Name (if known)" />
+                      <input type="text" className="form-control form-control-sm mb-2" name="accused.rcNr" value={formData.accused.rcNr} onChange={handleInputChange} placeholder="Nat. Reg. No." />
+                      <div className="input-group input-group-sm mb-2">
+                        <input type="text" className="form-control" name="accused.race" value={formData.accused.race} onChange={handleInputChange} placeholder="Race" />
+                        <select className="form-select" name="accused.sex" value={formData.accused.sex} onChange={handleInputChange}>
+                          <option value="">Sex</option><option value="M">M</option><option value="F">F</option>
+                        </select>
+                        <input type="number" className="form-control" name="accused.age" value={formData.accused.age} onChange={handleInputChange} placeholder="Age" />
+                      </div>
+                      <input type="text" className="form-control form-control-sm mb-2" name="accused.residentialAddress" value={formData.accused.residentialAddress} onChange={handleInputChange} placeholder="Res. Address" />
+                      <input type="text" className="form-control form-control-sm mb-2" name="accused.residentialPhone" value={formData.accused.residentialPhone} onChange={handleInputChange} placeholder="Res. Phone" />
+                      <input type="text" className="form-control form-control-sm mb-2" name="accused.businessAddress" value={formData.accused.businessAddress} onChange={handleInputChange} placeholder="Bus. Address" />
+                      <input type="text" className="form-control form-control-sm" name="accused.businessPhone" value={formData.accused.businessPhone} onChange={handleInputChange} placeholder="Bus. Phone" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Investigation Details & Forensics ── */}
+              <div className="card mb-4 shadow-sm border-info">
+                <div className="card-header bg-info text-dark fw-bold">Details, Forensics & Findings</div>
+                <div className="card-body p-3">
+                  <div className="row g-2 mb-3">
+                    <div className="col-md-6"><label className="small fw-bold">Value Stolen ($)</label><input type="text" className="form-control form-control-sm" name="valueStolen" value={formData.valueStolen} onChange={handleInputChange} /></div>
+                    <div className="col-md-6"><label className="small fw-bold">Value Recovered ($)</label><input type="text" className="form-control form-control-sm" name="valueRecovered" value={formData.valueRecovered} onChange={handleInputChange} /></div>
+                  </div>
+                  
+                  <div className="row g-2 mb-3 bg-light p-2 border rounded">
+                    <div className="col-md-4">
+                      <label className="small fw-bold d-block">Exhibits Held?</label>
+                      <select className="form-select form-select-sm" name="exhibitsHeld" value={formData.exhibitsHeld} onChange={handleInputChange}>
+                        <option value="NO">NO</option><option value="YES">YES</option>
+                      </select>
+                    </div>
+                    <div className="col-md-4">
+                      <label className="small fw-bold d-block">Fingerprints at Scene?</label>
+                      <select className="form-select form-select-sm" name="fingerprintsFound" value={formData.fingerprintsFound} onChange={handleInputChange}>
+                        <option value="NEG">NEG</option><option value="POS">POS</option>
+                      </select>
+                    </div>
+                    <div className="col-md-4">
+                      <label className="small fw-bold d-block">C.I.D. Reference</label>
+                      <input type="text" className="form-control form-control-sm" name="cidReference" value={formData.cidReference} onChange={handleInputChange} />
+                    </div>
+                  </div>
+
+                  <label className="small fw-bold">Brief Details of Offence</label>
+                  <textarea className="form-control form-control-sm mb-2" name="briefDetails" value={formData.briefDetails} onChange={handleInputChange} rows={3}></textarea>
+                  
+                  <label className="small fw-bold">Modus Operandi</label>
+                  <textarea className="form-control form-control-sm mb-2" name="modusOperandi" value={formData.modusOperandi} onChange={handleInputChange} rows={2}></textarea>
+                  
+                  <label className="small fw-bold text-success">Results / Findings (To C.C.B.)</label>
+                  <textarea className="form-control form-control-sm" name="resultsFindings" value={formData.resultsFindings} onChange={handleInputChange} rows={2}></textarea>
+                </div>
+              </div>
+
+              {/* ── Stolen Items (Form 169) ── */}
+              <div className="card mb-4 shadow-sm">
+                <div className="card-header bg-dark text-white py-2 fw-bold">FORM 169: Stolen / Lost Property</div>
+                <div className="card-body p-2">
+                  <div className="row g-2 mb-2">
+                    <div className="col-md-5"><input type="text" className="form-control form-control-sm" name="description" value={currentItem.description} onChange={handleItemChange} placeholder="Description of Stolen/Lost Property" /></div>
+                    <div className="col-md-5"><input type="text" className="form-control form-control-sm" name="identifyingMarks" value={currentItem.identifyingMarks} onChange={handleItemChange} placeholder="Identifying Marks, Serial Nos., etc." /></div>
+                    <div className="col-md-2"><button type="button" className="btn btn-sm btn-danger w-100" onClick={addStolenItem} disabled={!currentItem.description}>Add</button></div>
+                  </div>
+                  {formData.stolenItems.length > 0 && (
+                    <table className="table table-sm table-bordered mt-3 text-center align-middle">
+                      <thead className="table-light"><tr><th>Description</th><th>Marks / Serial</th><th>Date of Recovery</th><th></th></tr></thead>
+                      <tbody>
+                        {formData.stolenItems.map(item => (
+                          <tr key={item.id} className={item.dateRecovered ? 'table-success' : ''}>
+                            <td>{item.description}</td><td>{item.identifyingMarks}</td>
+                            <td>{item.dateRecovered ? <span className="badge bg-success">{item.dateRecovered}</span> : <input type="date" className="form-control form-control-sm mx-auto" style={{width:130}} onChange={(e) => markAsRecovered(item.id, e.target.value)} />}</td>
+                            <td><button type="button" className="btn btn-sm text-danger" onClick={() => removeStolenItem(item.id)}><i className="bi bi-trash"></i></button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+
+            </div>
+
+            {/* ══ RIGHT COLUMN (Summary) ═══════════════════════════════════ */}
+            <div className="col-lg-4">
+              <div className="card shadow-sm sticky-top" style={{ top: 80 }}>
+                <div className="card-header bg-success text-white py-2 fw-bold">Case Summary</div>
+                <div className="card-body p-3">
+                  <div className="mb-2"><strong className="small text-muted d-block">C.R. / L.P.B.</strong><span className="fw-bold">{formData.caseNumber}</span></div>
+                  <div className="mb-2"><strong className="small text-muted d-block">Offence</strong><span>{formData.crimeTypeId ? crimeTypes.find(ct => String(ct.id) === String(formData.crimeTypeId))?.name : '—'}</span></div>
+                  <div className="mb-2"><strong className="small text-muted d-block">Complainant</strong><span>{formData.complainant.name || '—'}</span></div>
+                  <div className="mb-2"><strong className="small text-muted d-block">Accused</strong><span>{formData.accused.name || '—'}</span></div>
+                  <hr/>
+                  <div className="d-flex justify-content-between mb-1"><span className="small">Property Items:</span><span className="fw-bold">{formData.stolenItems.length}</span></div>
+                  <div className="d-flex justify-content-between text-success"><span className="small">Recovered:</span><span className="fw-bold">{formData.stolenItems.filter(i => i.dateRecovered).length}</span></div>
+                  <hr/>
+                  <button type="submit" className="btn btn-primary w-100 mb-2" disabled={submitting}>
+                    {submitting ? 'Submitting...' : 'Submit Report'}
+                  </button>
+                  <button type="button" className="btn btn-outline-secondary w-100" onClick={handleReset} disabled={submitting}>Clear Forms</button>
                 </div>
               </div>
             </div>
-          </div>
 
-          {/* ── Submit / Reset ────────────────────────────────────────────── */}
-          <div className="row mb-4">
-            <div className="col-12 text-center">
-              <button
-                type="submit"
-                className="btn btn-primary btn-lg px-5 me-3"
-                disabled={submitting}
-              >
-                {submitting ? (
-                  <>
-                    <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-                    Submitting to Backend…
-                  </>
-                ) : (
-                  <>
-                    <i className="bi bi-check-circle me-2"></i>Submit Report
-                  </>
-                )}
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-lg px-5"
-                onClick={handleReset}
-                disabled={submitting}
-              >
-                <i className="bi bi-x-circle me-2"></i>Clear Form
-              </button>
-            </div>
           </div>
         </form>
       </div>
