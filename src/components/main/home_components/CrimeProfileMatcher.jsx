@@ -17,7 +17,7 @@ import { getIncidents, runProfileMatch } from '../../../services/crimeService';
 
 // ─── Safely extract the crime type name ──────────────────────────────────────
 const getCrimeTypeName = (incident) => {
-  const ct = incident?.crime_type;
+  const ct = incident?.crime_type_name;
   if (!ct) return 'Unknown';
   if (typeof ct === 'string') return ct;
   if (typeof ct === 'object' && ct.name) return ct.name;
@@ -28,7 +28,7 @@ const getCrimeTypeName = (incident) => {
 const buildCaseId = (incident) => {
   if (!incident) return '—';
   const typeName = getCrimeTypeName(incident);
-  return `${typeName.slice(0, 3).toUpperCase()}-${String(incident.id).padStart(4, '0')}`;
+  return `${typeName.slice(0, 3).toUpperCase()}-${String(incident.case_number).padStart(4, '0')}`;
 };
 
 // ─── MO keyword extraction (stopwords filtered) ───────────────────────────────
