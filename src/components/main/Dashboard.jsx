@@ -184,7 +184,13 @@ function Dashboard() {
   const [tsCrimeType,  setTsCrimeType]  = useState('');
   const [tsStartDate,  setTsStartDate]  = useState('');
   const [tsEndDate,    setTsEndDate]    = useState('');
-  const [tsData,       setTsData]       = useState({ labels: [], observed: [], trend: [] });
+  const [tsData, setTsData] = useState({
+    labels:   [],
+    observed: [],
+    trend:    [],
+    seasonal: [],   // ← NEW: repeating periodic pattern extracted by decomposition
+    residual: [],   // ← NEW: leftover noise after trend + seasonal are removed
+  });
   const [tsLoading,    setTsLoading]    = useState(false);
   const [tsSortDir,    setTsSortDir]    = useState('asc');  // table chronological sort
 
@@ -343,83 +349,170 @@ function Dashboard() {
    * ───────────────────────────────────────────────────────────────────────── */
   const fetchTimeSeries = useCallback(async () => {
     setTsLoading(true);
-
+  
+    // Build the API filter payload from the current UI state
     const filters = { freq: tsFreq };
     if (tsCrimeType)  filters.crime_type_id = tsCrimeType;
     if (tsStartDate)  filters.start_date    = tsStartDate;
     if (tsEndDate)    filters.end_date      = tsEndDate;
-
+  
     try {
-      const ts       = await getTimeSeries(filters);
+      const ts      = await getTimeSeries(filters);
+  
+      // ── Unwrap the backend envelope ──────────────────────────────────────────
+      // TimeSeriesView returns { timeseries: { labels, observed, trend,
+      //                                        seasonal, residual, ... } }
+      // Some older responses may return the inner object directly.
       const tsInner  = ts?.timeseries ?? ts;
+  
+      // ── Extract all four decomposition series ────────────────────────────────
+      // The backend uses "labels" as the date-string array key (not "dates").
       const labels   = tsInner?.labels   ?? tsInner?.dates   ?? [];
       const observed = tsInner?.observed ?? [];
       const trend    = tsInner?.trend    ?? [];
-
-      setTsData({ labels, observed, trend });
-
-      // Rebuild the line chart
+      const seasonal = tsInner?.seasonal ?? [];  // NEW — periodic component
+      const residual = tsInner?.residual ?? [];  // NEW — noise component
+  
+      // Persist all four series in state so the data table can also use them
+      setTsData({ labels, observed, trend, seasonal, residual });
+  
+      // ── Rebuild the Chart.js line chart ──────────────────────────────────────
       destroyChart(lineChartInstance);
+  
       if (lineChartRef.current && labels.length) {
-        // Format labels compactly: "2024-06-10" → "06-10" (weekly/daily) or "2024-06" (monthly)
+  
+        // Format date labels compactly for the x-axis tick marks
         const shortLabels = labels.map(d => {
           if (!d) return '';
           return tsFreq === 'M' ? d.slice(0, 7) : d.slice(5);
         });
-
+  
+        // ── Build the dataset array — only include a component if the backend
+        //    actually returned non-null values for it. This prevents empty legend
+        //    entries when the dataset doesn't have enough points to decompose.
+        const datasets = [
+          {
+            // Primary series — always shown
+            label:           'Observed',
+            data:            observed,
+            borderColor:     '#1565C0',
+            backgroundColor: 'rgba(21,101,192,0.08)',
+            borderWidth:     2.5,
+            pointRadius:     3,
+            fill:            true,
+            tension:         0.35,
+            // No borderDash → solid line distinguishes it from the derived series
+          },
+        ];
+  
+        // Trend: long-term direction; shown as a red long-dash overlay
+        if (trend && trend.some(v => v !== null)) {
+          datasets.push({
+            label:           'Trend',
+            data:            trend,
+            borderColor:     '#c0392b',
+            backgroundColor: 'transparent',
+            borderWidth:     2,
+            borderDash:      [6, 3],   // long dashes, short gaps
+            pointRadius:     0,        // no dots — keeps the chart clean
+            fill:            false,
+            tension:         0.35,
+          });
+        }
+  
+        // Seasonal: repeating calendar pattern; shown as a green medium-dash line
+        // This reveals weekly/monthly crime rhythms (e.g. weekends, end-of-month)
+        if (seasonal && seasonal.some(v => v !== null)) {
+          datasets.push({
+            label:           'Seasonal',
+            data:            seasonal,
+            borderColor:     '#1e8449',
+            backgroundColor: 'transparent',
+            borderWidth:     1.8,
+            borderDash:      [4, 4],   // equal dashes and gaps
+            pointRadius:     0,
+            fill:            false,
+            tension:         0.35,
+          });
+        }
+  
+        // Residual: unexplained noise after removing trend and seasonal components.
+        // Spikes here indicate unusual incidents that don't fit normal patterns —
+        // useful for identifying anomalous crime surges.
+        if (residual && residual.some(v => v !== null)) {
+          datasets.push({
+            label:           'Residual',
+            data:            residual,
+            borderColor:     '#d35400',  // orange
+            backgroundColor: 'transparent',
+            borderWidth:     1.5,
+            borderDash:      [2, 4],     // short dashes — visually "noisy" appearance
+            pointRadius:     0,
+            fill:            false,
+            tension:         0,          // tension:0 keeps the jagged noise character
+          });
+        }
+  
         lineChartInstance.current = new Chart(lineChartRef.current, {
           type: 'line',
           data: {
-            labels: shortLabels,
-            datasets: [
-              {
-                label          : 'Observed',
-                data           : observed,
-                borderColor    : '#1565C0',
-                backgroundColor: 'rgba(21,101,192,0.08)',
-                borderWidth    : 2,
-                pointRadius    : 3,
-                fill           : true,
-                tension        : 0.35,
-              },
-              // Overlay the statistical trend line when available
-              ...(trend && trend.some(v => v !== null) ? [{
-                label          : 'Trend',
-                data           : trend,
-                borderColor    : '#c0392b',
-                backgroundColor: 'transparent',
-                borderWidth    : 2,
-                borderDash     : [5, 3],
-                pointRadius    : 0,
-                fill           : false,
-                tension        : 0.35,
-              }] : []),
-            ],
+            labels:   shortLabels,
+            datasets: datasets,
           },
           options: {
-            responsive        : true,
+            responsive:          true,
             maintainAspectRatio: false,
-            interaction       : { mode: 'index', intersect: false },
+            interaction: { mode: 'index', intersect: false },
             plugins: {
-              legend : { display: true, position: 'top', labels: { font: { size: 10 }, boxWidth: 10 } },
-              tooltip: { callbacks: {
-                label: (ctx) => ` ${ctx.dataset.label}: ${ctx.raw ?? '—'}`,
-              }},
+              // ── Legend: always visible so users know which line is which ────
+              legend: {
+                display:  true,
+                position: 'top',
+                labels: {
+                  font:     { size: 10 },
+                  boxWidth: 12,
+                  padding:  12,
+                  // Generate the dashed-line pattern in the legend swatch using
+                  // the pointStyle "line" so dashes match the dataset lineDash
+                  usePointStyle: false,
+                },
+              },
+              // ── Tooltip: show all 4 values at once when hovering ────────────
+              tooltip: {
+                callbacks: {
+                  label: (ctx) =>
+                    ` ${ctx.dataset.label}: ${
+                      ctx.raw !== null && ctx.raw !== undefined
+                        ? parseFloat(ctx.raw).toFixed(1)
+                        : '—'
+                    }`,
+                },
+              },
             },
             scales: {
               x: {
-                ticks: { font: { size: 9 }, maxTicksLimit: 12, maxRotation: 45 },
-                grid : { display: false },
+                ticks: {
+                  font:           { size: 9 },
+                  maxTicksLimit:  12,
+                  maxRotation:    45,
+                },
+                grid: { display: false },
               },
               y: {
-                beginAtZero: true,
+                // Allow negative values — the residual component can go below zero
+                beginAtZero: false,
                 ticks: { font: { size: 10 } },
-                grid : { color: '#f0f2f5' },
-                title: { display: true, text: 'Incident Count', font: { size: 10 } },
+                grid:  { color: '#f0f2f5' },
+                title: {
+                  display: true,
+                  text:    'Incident Count',
+                  font:    { size: 10 },
+                },
               },
             },
           },
         });
+  
       } else if (lineChartRef.current) {
         // No data — draw a placeholder message directly on the canvas
         const ctx = lineChartRef.current.getContext('2d');
@@ -433,12 +526,14 @@ function Dashboard() {
           lineChartRef.current.height / 2,
         );
       }
+  
     } catch (e) {
       console.error('[Dashboard] fetchTimeSeries error:', e);
     } finally {
       setTsLoading(false);
     }
   }, [tsFreq, tsCrimeType, tsStartDate, tsEndDate]);
+
 
   /* ─────────────────────────────────────────────────────────────────────────
    * buildCharts
@@ -629,30 +724,34 @@ function Dashboard() {
    * % change, and plain-English interpretation columns.
    * ───────────────────────────────────────────────────────────────────────── */
   const tsTableRows = useMemo(() => {
-    const { labels, observed, trend } = tsData;
+    const { labels, observed, trend, seasonal, residual } = tsData;
     if (!labels.length) return [];
-
+  
     const mavg = movingAverage(observed, 4);
-
-    // Build an array of row objects in chronological order
+  
     const rows = labels.map((label, i) => {
       const obs  = observed[i] ?? 0;
       const prev = i > 0 ? observed[i - 1] : null;
       const pct  = percentChange(prev, obs);
-
+  
       return {
         label,
-        observed    : obs,
-        trend       : trend[i] !== null && trend[i] !== undefined ? parseFloat((trend[i] ?? 0).toFixed(1)) : null,
-        movingAvg   : mavg[i],
-        pctChange   : pct,
+        observed:  obs,
+        // Trend component rounded to 1dp; null if not computed
+        trend:     trend[i]    !== null && trend[i]    !== undefined ? parseFloat((trend[i]    ?? 0).toFixed(1)) : null,
+        // Seasonal component — the periodic fluctuation for this period
+        seasonal:  seasonal[i] !== null && seasonal[i] !== undefined ? parseFloat((seasonal[i] ?? 0).toFixed(2)) : null,
+        // Residual component — what remains after trend + seasonal
+        residual:  residual[i] !== null && residual[i] !== undefined ? parseFloat((residual[i] ?? 0).toFixed(2)) : null,
+        movingAvg: mavg[i],
+        pctChange: pct,
         interpretation: trendInterpretation(obs, mavg[i], prev),
       };
     });
-
-    // Allow the user to reverse chronological order
+  
     return tsSortDir === 'asc' ? rows : [...rows].reverse();
   }, [tsData, tsSortDir]);
+
 
   /* ── Time-series statistical summary ─────────────────────────────────── */
   const tsSummary = useMemo(() => {
@@ -876,6 +975,8 @@ function Dashboard() {
                         <th>Period</th>
                         <th className="text-end">Observed</th>
                         <th className="text-end">Trend</th>
+                        <th className="text-end" style={{ color: '#1e8449' }}>Seasonal</th>
+                        <th className="text-end" style={{ color: '#d35400' }}>Residual</th>
                         <th className="text-end">4-Period MA</th>
                         <th className="text-end">% Change</th>
                         <th>Interpretation</th>
@@ -889,8 +990,14 @@ function Dashboard() {
                           <td className="text-end text-muted" style={{ fontSize: '0.78rem' }}>
                             {row.trend ?? '—'}
                           </td>
+                          <td className="text-end" style={{ fontSize: '0.78rem', color: '#1e8449' }}>
+                            {row.seasonal ?? 'empty'}
+                          </td>
+                          <td className="text-end" style={{ fontSize: '0.78rem', color: '#d35400' }}>
+                            {row.residual ?? 'empty'}
+                          </td>
                           <td className="text-end text-muted" style={{ fontSize: '0.78rem' }}>
-                            {row.movingAvg ?? '—'}
+                            {row.movingAvg ?? 'empty'}
                           </td>
                           <td className={`text-end ${row.pctChange.cls}`} style={{ fontSize: '0.78rem' }}>
                             {row.pctChange.text}
@@ -906,9 +1013,23 @@ function Dashboard() {
 
                 {/* Interpretation legend */}
                 <div className="mt-2 d-flex gap-3 flex-wrap" style={{ fontSize: '0.72rem', color: '#6c757d' }}>
-                  <span><strong className="text-danger">Red % change</strong> = &gt; 5 % increase (alert)</span>
-                  <span><strong className="text-success">Green % change</strong> = &gt; 5 % decrease (positive)</span>
-                  <span>4-Period MA is unavailable for the first 3 periods (insufficient history)</span>
+                  <span>
+                    <span style={{ display:'inline-block', width:14, height:3, background:'#1565C0', verticalAlign:'middle', marginRight:4 }}></span>
+                    <strong>Observed</strong> — raw incident count per period
+                  </span>
+                  <span>
+                    <span style={{ display:'inline-block', width:14, height:2, background:'#c0392b', verticalAlign:'middle', marginRight:4, borderTop:'2px dashed #c0392b' }}></span>
+                    <strong>Trend</strong> — long-term direction after noise removed
+                  </span>
+                  <span>
+                    <span style={{ display:'inline-block', width:14, height:2, background:'#1e8449', verticalAlign:'middle', marginRight:4, borderTop:'2px dashed #1e8449' }}></span>
+                    <strong style={{ color:'#1e8449' }}>Seasonal</strong> — recurring calendar pattern (weekly/monthly rhythm)
+                  </span>
+                  <span>
+                    <span style={{ display:'inline-block', width:14, height:2, background:'#d35400', verticalAlign:'middle', marginRight:4, borderTop:'2px dashed #d35400' }}></span>
+                    <strong style={{ color:'#d35400' }}>Residual</strong> — unexplained noise; spikes = anomalous events
+                  </span>
+                  <span className="ms-auto">4-Period MA is unavailable for first 3 periods</span>
                 </div>
               </div>
             )}
